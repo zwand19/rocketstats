@@ -1,0 +1,115 @@
+@page "/players"
+@inject IStatsApiStreamService StatsApiStreamService
+@inject IToastService ToastService
+@inject ILogger<Players> Logger
+
+<section class="page-header">
+  <div>
+    <p class="eyebrow">Tracking management</p>
+    <h1>Players</h1>
+    <p>Everyone seen by the Stats API is collected. Toggle which players appear on the dashboard.</p>
+  </div>
+  <div class="actions">
+    <button class="link-button" @onclick="RefreshClickedAsync">Refresh</button>
+  </div>
+</section>
+
+<section class="card">
+  <div class="section-title">
+    <h2>Observed players</h2>
+    <span class="muted">@_players.Count total · @StatsApiStreamService.ConnectionState</span>
+  </div>
+
+  @if (!string.IsNullOrWhiteSpace(StatsApiStreamService.LastError))
+  {
+    <section class="alert">@StatsApiStreamService.LastError</section>
+  }
+
+  @if (_players.Count == 0)
+  {
+    <p class="muted">No players have been observed yet. Enable the Stats API in Rocket League, then start a match or replay.</p>
+  }
+  else
+  {
+    <div class="player-table">
+      <div class="player-row player-row-header">
+        <span>Dashboard</span>
+        <span>Name</span>
+        <span>Primary ID</span>
+        <span>Last seen</span>
+      </div>
+
+      @foreach (var player in _players)
+      {
+        <div class="player-row">
+          <button class="link-button" @onclick="() => ToggleDashboardVisibilityAsync(player)">
+            @(player.ShowOnDashboard ? "Untrack" : "Track")
+          </button>
+          <strong>@player.Name</strong>
+          <code>@player.PrimaryId</code>
+          <span>@player.LastSeenAt.LocalDateTime.ToString("g")</span>
+        </div>
+      }
+    </div>
+  }
+</section>
+
+<section class="card">
+  <h2>Setup reminder</h2>
+  <p class="muted">
+    Rocket League must be restarted after enabling the Stats API. Set <code>PacketSendRate</code> above 0 in
+    <code>TAGame\Config\DefaultStatsAPI.ini</code>. The default socket port is <code>49123</code>.
+  </p>
+</section>
+
+@code {
+  private IReadOnlyList<ObservedPlayer> _players = [];
+
+  protected override async Task OnInitializedAsync()
+  {
+    await StartListenerIfNeededAsync();
+    await RefreshAsync();
+  }
+
+  private async Task RefreshClickedAsync()
+  {
+    await RefreshAsync();
+    ToastService.Show("Players refreshed.");
+  }
+
+  private async Task StartListenerIfNeededAsync()
+  {
+    if (StatsApiStreamService.ConnectionState is StatsApiConnectionState.Stopped or StatsApiConnectionState.Faulted)
+    {
+      await StatsApiStreamService.StartAsync();
+    }
+  }
+
+  private async Task RefreshAsync()
+  {
+    _players = await StatsApiStreamService.GetObservedPlayersAsync();
+    Logger.LogInformation(
+      "Players page loaded {PlayerCount} observed players with {DashboardPlayerCount} selected for dashboard.",
+      _players.Count,
+      _players.Count(player => player.ShowOnDashboard));
+  }
+
+  private async Task ToggleDashboardVisibilityAsync(ObservedPlayer player)
+  {
+    var showOnDashboard = !player.ShowOnDashboard;
+    Logger.LogInformation(
+      "Players page toggling dashboard visibility for {PlayerName} ({PrimaryId}) to {ShowOnDashboard}.",
+      player.Name,
+      player.PrimaryId,
+      showOnDashboard);
+
+    await StatsApiStreamService.SetDashboardVisibilityAsync(player.PrimaryId, showOnDashboard);
+    _players = _players
+      .Select(currentPlayer => string.Equals(currentPlayer.PrimaryId, player.PrimaryId, StringComparison.OrdinalIgnoreCase)
+        ? currentPlayer with { ShowOnDashboard = showOnDashboard }
+        : currentPlayer)
+      .ToArray();
+    ToastService.Show(showOnDashboard ? "Player added to dashboard." : "Player removed from dashboard.");
+    await RefreshAsync();
+  }
+}

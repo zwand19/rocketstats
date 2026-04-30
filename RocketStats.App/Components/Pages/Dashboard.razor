@@ -1,0 +1,194 @@
+@page "/"
+@implements IDisposable
+@inject IStatsApiStreamService StatsApiStreamService
+@inject IToastService ToastService
+
+<section class="page-header">
+  <div>
+    <p class="eyebrow">Tracked stats</p>
+    <h1>Dashboard</h1>
+    <p>Live match state and per-game averages for the players you're tracking.</p>
+  </div>
+  <div class="actions">
+    <button class="link-button" @onclick="RefreshClickedAsync">Refresh</button>
+  </div>
+</section>
+
+<section class="card">
+  <div class="section-title">
+    <h2>Live match</h2>
+    <span class="muted">@(_liveMatch?.UpdatedAt.LocalDateTime.ToString("T") ?? "No match state yet")</span>
+  </div>
+
+  @if (_liveMatch is null)
+  {
+    <p class="muted">Start Rocket League with the Stats API enabled, then start a match or replay.</p>
+  }
+  else
+  {
+    <div class="rank-list">
+      <div class="rank-row">
+        <span>Match</span>
+        <strong>@(_liveMatch.MatchGuid ?? "Local or unknown")</strong>
+        <span>@_liveMatch.Arena</span>
+      </div>
+      <div class="rank-row">
+        <span>Clock</span>
+        <strong>@TimeSpan.FromSeconds(_liveMatch.TimeSeconds).ToString("m\\:ss")</strong>
+        <span>@(_liveMatch.IsOvertime ? "Overtime" : "Regulation")</span>
+      </div>
+    </div>
+
+    @if (_liveMatch.Players.Count > 0)
+    {
+      <div class="live-player-grid">
+        @foreach (var player in _liveMatch.Players)
+        {
+          <article class="live-player-card">
+            <div>
+              <strong>@player.Name</strong>
+              <span>@player.PrimaryId</span>
+            </div>
+            <div class="mini-stats">
+              <span>@player.Score pts</span>
+              <span>@player.Goals G</span>
+              <span>@player.Assists A</span>
+              <span>@player.Saves S</span>
+              <span>@player.Shots shots</span>
+              <span>@player.Boost boost</span>
+            </div>
+          </article>
+        }
+      </div>
+    }
+  }
+</section>
+
+<section class="card">
+  <div class="section-title">
+    <h2>Tracked players</h2>
+    <span class="muted">@_dashboardPlayers.Count tracked · averages over @TotalGames games</span>
+  </div>
+
+  @if (_dashboardPlayers.Count == 0)
+  {
+    <p class="muted">
+      No players are tracked yet. Open <NavLink href="players">Players</NavLink> and Track someone to see their averages here.
+    </p>
+  }
+  else if (_averages.Count == 0)
+  {
+    <p class="muted">No completed matches yet for tracked players. Averages appear after a match ends.</p>
+  }
+  else
+  {
+    <div class="averages-table">
+      <div class="averages-row averages-row-header">
+        <span>Player</span>
+        <span title="Games played">GP</span>
+        <span>Score/g</span>
+        <span>Goals/g</span>
+        <span>Assists/g</span>
+        <span>Saves/g</span>
+        <span>Shots/g</span>
+        <span>Touches/g</span>
+        <span>Demos/g</span>
+        <span>Boost avg</span>
+      </div>
+
+      @foreach (var player in _dashboardPlayers)
+      {
+        var averages = _averages.FirstOrDefault(entry =>
+          string.Equals(entry.PrimaryId, player.PrimaryId, StringComparison.OrdinalIgnoreCase));
+
+        <div class="averages-row">
+          <div>
+            <strong>@player.Name</strong>
+            <span class="muted">@player.PrimaryId</span>
+          </div>
+
+          @if (averages is null)
+          {
+            <span class="muted">—</span>
+            <span class="muted">—</span>
+            <span class="muted">—</span>
+            <span class="muted">—</span>
+            <span class="muted">—</span>
+            <span class="muted">—</span>
+            <span class="muted">—</span>
+            <span class="muted">—</span>
+            <span class="muted">No matches yet</span>
+          }
+          else
+          {
+            <span>@averages.GamesPlayed</span>
+            <span>@averages.Score.ToString("0.0")</span>
+            <span>@averages.Goals.ToString("0.00")</span>
+            <span>@averages.Assists.ToString("0.00")</span>
+            <span>@averages.Saves.ToString("0.00")</span>
+            <span>@averages.Shots.ToString("0.00")</span>
+            <span>@averages.Touches.ToString("0.0")</span>
+            <span>@averages.Demos.ToString("0.00")</span>
+            <span>@averages.Boost.ToString("0.0")</span>
+          }
+        </div>
+      }
+    </div>
+  }
+</section>
+
+@code {
+  private readonly PeriodicTimer _refreshTimer = new(TimeSpan.FromSeconds(2));
+
+  private IReadOnlyList<ObservedPlayer> _dashboardPlayers = [];
+  private IReadOnlyList<PlayerAverages> _averages = [];
+  private LiveMatchState? _liveMatch;
+
+  private int TotalGames => _averages.Count == 0 ? 0 : _averages.Max(entry => entry.GamesPlayed);
+
+  protected override async Task OnInitializedAsync()
+  {
+    await StartListenerIfNeededAsync();
+    await RefreshAsync();
+    _ = RefreshLoopAsync();
+  }
+
+  public void Dispose()
+  {
+    _refreshTimer.Dispose();
+  }
+
+  private async Task RefreshClickedAsync()
+  {
+    await RefreshAsync();
+    ToastService.Show("Dashboard refreshed.");
+  }
+
+  private async Task StartListenerIfNeededAsync()
+  {
+    if (StatsApiStreamService.ConnectionState is StatsApiConnectionState.Stopped or StatsApiConnectionState.Faulted)
+    {
+      await StatsApiStreamService.StartAsync();
+    }
+  }
+
+  private async Task RefreshLoopAsync()
+  {
+    while (await _refreshTimer.WaitForNextTickAsync())
+    {
+      await InvokeAsync(async () =>
+      {
+        await RefreshAsync();
+        StateHasChanged();
+      });
+    }
+  }
+
+  private async Task RefreshAsync()
+  {
+    _dashboardPlayers = await StatsApiStreamService.GetDashboardPlayersAsync();
+    _liveMatch = await StatsApiStreamService.GetLiveMatchStateAsync();
+    _averages = await StatsApiStreamService.GetPlayerAveragesAsync(
+      _dashboardPlayers.Select(player => player.PrimaryId));
+  }
+}
