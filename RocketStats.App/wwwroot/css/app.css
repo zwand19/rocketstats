@@ -103,6 +103,10 @@ nav a:hover {
   padding: 22px;
 }
 
+.card + .card {
+  margin-top: 20px;
+}
+
 .grid {
   display: grid;
   gap: 16px;
@@ -282,12 +286,70 @@ label {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
+.live-teams {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-top: 18px;
+}
+
+.live-team {
+  background: rgba(15, 23, 42, 0.5);
+  border: 1px solid rgba(148, 163, 184, 0.12);
+  border-radius: 16px;
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+}
+
+.live-team.team-blue {
+  border-color: rgba(59, 130, 246, 0.4);
+}
+
+.live-team.team-orange {
+  border-color: rgba(249, 115, 22, 0.4);
+}
+
+.live-team-header {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+}
+
+.team-dot {
+  border-radius: 999px;
+  display: inline-block;
+  height: 10px;
+  width: 10px;
+}
+
+.team-blue .team-dot {
+  background: #3b82f6;
+}
+
+.team-orange .team-dot {
+  background: #f97316;
+}
+
+.team-unknown .team-dot {
+  background: #94a3b8;
+}
+
 .live-player-card {
   background: rgba(30, 41, 59, 0.6);
+  border-left: 4px solid transparent;
   border-radius: 16px;
   display: grid;
   gap: 14px;
   padding: 16px;
+}
+
+.live-player-card.team-blue {
+  border-left-color: #3b82f6;
+}
+
+.live-player-card.team-orange {
+  border-left-color: #f97316;
 }
 
 .live-player-card div:first-child {
@@ -299,6 +361,33 @@ label {
 .player-row span,
 .player-row code {
   color: #94a3b8;
+}
+
+.head-to-head {
+  align-items: center;
+  background: rgba(15, 23, 42, 0.55);
+  border-radius: 10px;
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 0.85rem;
+  gap: 6px;
+  padding: 6px 10px;
+}
+
+.record-text {
+  color: #f8fafc;
+  font-variant-numeric: tabular-nums;
+}
+
+.team-record {
+  align-items: center;
+  background: rgba(30, 41, 59, 0.6);
+  border-radius: 14px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 14px;
+  padding: 12px 14px;
 }
 
 .mini-stats {
@@ -333,6 +422,35 @@ label {
   padding: 14px;
 }
 
+.session-table .averages-row {
+  grid-template-columns: minmax(180px, 1.4fr) 60px 80px repeat(8, minmax(0, 1fr));
+}
+
+.session-stat {
+  align-items: center;
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-variant-numeric: tabular-nums;
+}
+
+.chip {
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  padding: 2px 7px;
+}
+
+.chip-up {
+  background: rgba(34, 197, 94, 0.18);
+  color: #86efac;
+}
+
+.chip-down {
+  background: rgba(239, 68, 68, 0.18);
+  color: #fca5a5;
+}
+
 .averages-row-header {
   background: transparent;
   color: #cbd5e1;
@@ -356,7 +474,7 @@ label {
   border-radius: 14px;
   display: grid;
   gap: 12px;
-  grid-template-columns: 120px 1fr 1.4fr 180px;
+  grid-template-columns: 120px 1fr 180px;
   padding: 14px;
 }
 
@@ -386,6 +504,81 @@ code {
   padding: 16px;
 }
 
+.games-list {
+  display: grid;
+  gap: 12px;
+}
+
+.game-row {
+  align-items: stretch;
+  background: rgba(30, 41, 59, 0.6);
+  border-radius: 14px;
+  display: grid;
+  gap: 14px;
+  grid-template-columns: minmax(180px, 220px) 1fr minmax(160px, auto);
+  padding: 14px;
+}
+
+.game-meta {
+  display: grid;
+  gap: 4px;
+}
+
+.game-teams {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.game-team {
+  background: rgba(15, 23, 42, 0.5);
+  border: 1px solid rgba(148, 163, 184, 0.12);
+  border-left-width: 4px;
+  border-radius: 12px;
+  display: grid;
+  gap: 6px;
+  padding: 10px;
+}
+
+.game-team.team-blue {
+  border-left-color: #3b82f6;
+}
+
+.game-team.team-orange {
+  border-left-color: #f97316;
+}
+
+.game-team-winner {
+  background: rgba(34, 197, 94, 0.08);
+}
+
+.game-team-header {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+}
+
+.game-player {
+  display: grid;
+  gap: 2px;
+}
+
+.game-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.pagination {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+  justify-content: center;
+  margin-top: 16px;
+}
+
 .skeleton div {
   animation: pulse 1.2s infinite ease-in-out;
   background: rgba(148, 163, 184, 0.18);
@@ -413,8 +606,11 @@ code {
   .grid,
   .form-grid,
   .live-player-grid,
+  .live-teams,
   .player-row,
-  .averages-row {
+  .averages-row,
+  .game-row,
+  .game-teams {
     grid-template-columns: 1fr;
   }
 

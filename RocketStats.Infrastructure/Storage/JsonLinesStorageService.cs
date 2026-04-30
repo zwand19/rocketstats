@@ -131,6 +131,69 @@ public sealed class JsonLinesStorageService : IAppendOnlyStorageService
     }
   }
 
+  public async Task RewriteAsync<T>(
+    string key,
+    IEnumerable<T> rows,
+    CancellationToken cancellationToken = default)
+  {
+    var gate = GetGate(key);
+    await gate.WaitAsync(cancellationToken);
+
+    try
+    {
+      var path = GetPath(key);
+      var lines = rows.Select(row => JsonSerializer.Serialize(row, JsonOptions));
+      var tempPath = path + ".tmp";
+      await File.WriteAllLinesAsync(tempPath, lines, Encoding.UTF8, cancellationToken);
+      File.Move(tempPath, path, overwrite: true);
+    }
+    finally
+    {
+      gate.Release();
+    }
+  }
+
+  public async Task UpdateLastAsync<T>(
+    string key,
+    T row,
+    CancellationToken cancellationToken = default)
+  {
+    var gate = GetGate(key);
+    await gate.WaitAsync(cancellationToken);
+
+    try
+    {
+      var path = GetPath(key);
+      var serialized = JsonSerializer.Serialize(row, JsonOptions);
+
+      if (!File.Exists(path))
+      {
+        await File.WriteAllTextAsync(path, serialized + Environment.NewLine, Encoding.UTF8, cancellationToken);
+        return;
+      }
+
+      var allLines = await File.ReadAllLinesAsync(path, Encoding.UTF8, cancellationToken);
+      var nonEmpty = allLines.Where(line => !string.IsNullOrWhiteSpace(line)).ToList();
+
+      if (nonEmpty.Count == 0)
+      {
+        nonEmpty.Add(serialized);
+      }
+      else
+      {
+        nonEmpty[^1] = serialized;
+      }
+
+      var tempPath = path + ".tmp";
+      await File.WriteAllLinesAsync(tempPath, nonEmpty, Encoding.UTF8, cancellationToken);
+      File.Move(tempPath, path, overwrite: true);
+    }
+    finally
+    {
+      gate.Release();
+    }
+  }
+
   private SemaphoreSlim GetGate(string key)
   {
     lock (_gatesLock)

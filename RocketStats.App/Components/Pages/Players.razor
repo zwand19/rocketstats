@@ -35,7 +35,6 @@
       <div class="player-row player-row-header">
         <span>Dashboard</span>
         <span>Name</span>
-        <span>Primary ID</span>
         <span>Last seen</span>
       </div>
 
@@ -46,7 +45,6 @@
             @(player.ShowOnDashboard ? "Untrack" : "Track")
           </button>
           <strong>@player.Name</strong>
-          <code>@player.PrimaryId</code>
           <span>@player.LastSeenAt.LocalDateTime.ToString("g")</span>
         </div>
       }

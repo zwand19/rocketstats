@@ -32,4 +32,41 @@ public interface IStatsApiStreamService
   Task<IReadOnlyList<PlayerAverages>> GetPlayerAveragesAsync(
     IEnumerable<string>? primaryIds = null,
     CancellationToken cancellationToken = default);
+
+  Task<IReadOnlyList<MatchSession>> GetSessionsAsync(
+    CancellationToken cancellationToken = default);
+
+  Task<MatchSession?> GetCurrentSessionAsync(
+    CancellationToken cancellationToken = default);
+
+  Task<IReadOnlyList<SessionAverages>> GetCurrentSessionAveragesAsync(
+    IEnumerable<string> primaryIds,
+    CancellationToken cancellationToken = default);
+
+  Task<IReadOnlyList<HeadToHeadRecord>> GetHeadToHeadAsync(
+    string myPrimaryId,
+    IEnumerable<string> opponentIds,
+    int? gameMode = null,
+    CancellationToken cancellationToken = default);
+
+  Task<TeamHeadToHeadRecord?> GetTeamHeadToHeadAsync(
+    IReadOnlyList<string> myTeamIds,
+    IReadOnlyList<string> opponentIds,
+    int gameMode,
+    CancellationToken cancellationToken = default);
+
+  Task<MatchesPage> GetMatchesPagedAsync(
+    int page,
+    int pageSize,
+    CancellationToken cancellationToken = default);
+
+  Task DeleteMatchAsync(
+    string matchGuid,
+    CancellationToken cancellationToken = default);
 }
+
+public sealed record MatchesPage(
+  IReadOnlyList<MatchSummary> Items,
+  int Page,
+  int PageSize,
+  int TotalCount);

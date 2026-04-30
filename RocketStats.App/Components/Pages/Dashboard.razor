@@ -41,32 +41,116 @@
 
     @if (_liveMatch.Players.Count > 0)
     {
-      <div class="live-player-grid">
-        @foreach (var player in _liveMatch.Players)
+      <div class="live-teams">
+        @foreach (var team in GetTeams(_liveMatch.Players))
         {
-          <article class="live-player-card">
-            <div>
-              <strong>@player.Name</strong>
-              <span>@player.PrimaryId</span>
+          <div class="live-team @TeamClass(team.TeamNum)">
+            <div class="live-team-header">
+              <span class="team-dot"></span>
+              <strong>@TeamLabel(team.TeamNum)</strong>
+              <span class="muted">@team.Players.Count @(team.Players.Count == 1 ? "player" : "players")</span>
             </div>
-            <div class="mini-stats">
-              <span>@player.Score pts</span>
-              <span>@player.Goals G</span>
-              <span>@player.Assists A</span>
-              <span>@player.Saves S</span>
-              <span>@player.Shots shots</span>
-              <span>@player.Boost boost</span>
-            </div>
-          </article>
+
+            @foreach (var player in team.Players)
+            {
+              <article class="live-player-card @TeamClass(team.TeamNum)">
+                <div>
+                  <strong>@player.Name</strong>
+                </div>
+                <div class="mini-stats">
+                  <span>@player.Score pts</span>
+                  <span>@player.Goals G</span>
+                  <span>@player.Assists A</span>
+                  <span>@player.Saves S</span>
+                  <span>@player.Shots shots</span>
+                  <span>@player.Boost boost</span>
+                </div>
+                @if (IsOpponent(player) && TryGetHeadToHead(player.PrimaryId, out var record))
+                {
+                  <div class="head-to-head">
+                    <span class="muted">Lifetime vs @player.Name:</span>
+                    <strong class="record-text">@record.Wins-@record.Losses</strong>
+                    <span class="muted">(@record.GamesPlayed @(record.GamesPlayed == 1 ? "game" : "games"))</span>
+                  </div>
+                }
+              </article>
+            }
+          </div>
         }
       </div>
+
+      @if (_teamRecord is not null)
+      {
+        <div class="team-record">
+          <span class="muted">Team record vs this lineup (@FormatGameMode(_teamRecord.GameMode)):</span>
+          <strong class="record-text">@_teamRecord.Wins-@_teamRecord.Losses</strong>
+          <span class="muted">over @(_teamRecord.Wins + _teamRecord.Losses) past matches</span>
+        </div>
+      }
     }
   }
 </section>
 
+@if (_currentSession is not null)
+{
+  <section class="card">
+    <div class="section-title">
+      <h2>Current session</h2>
+      <span class="muted">
+        Started @_currentSession.StartedAt.LocalDateTime.ToString("g") · @_currentSession.MatchGuids.Count @(_currentSession.MatchGuids.Count == 1 ? "game" : "games")
+      </span>
+    </div>
+
+    @if (_sessionAverages.Count == 0)
+    {
+      <p class="muted">No tracked players have games in this session yet.</p>
+    }
+    else
+    {
+      <div class="averages-table session-table">
+        <div class="averages-row averages-row-header">
+          <span>Player</span>
+          <span title="Games played">GP</span>
+          <span title="Wins-Losses">W-L</span>
+          <span>Score/g</span>
+          <span>Goals/g</span>
+          <span>Assists/g</span>
+          <span>Saves/g</span>
+          <span>Shots/g</span>
+          <span>Touches/g</span>
+          <span>Demos/g</span>
+          <span>Boost avg</span>
+        </div>
+
+        @foreach (var session in _sessionAverages)
+        {
+          var allTime = _averages.FirstOrDefault(entry =>
+            string.Equals(entry.PrimaryId, session.PrimaryId, StringComparison.OrdinalIgnoreCase));
+
+          <div class="averages-row">
+            <div>
+              <strong>@session.Name</strong>
+            </div>
+            <span>@session.GamesPlayed</span>
+            <span>@session.Wins-@session.Losses</span>
+            @RenderSessionStat(session.Score, allTime?.Score, "0.0")
+            @RenderSessionStat(session.Goals, allTime?.Goals, "0.00")
+            @RenderSessionStat(session.Assists, allTime?.Assists, "0.00")
+            @RenderSessionStat(session.Saves, allTime?.Saves, "0.00")
+            @RenderSessionStat(session.Shots, allTime?.Shots, "0.00")
+            @RenderSessionStat(session.Touches, allTime?.Touches, "0.0")
+            @RenderSessionStat(session.Demos, allTime?.Demos, "0.00")
+            @RenderSessionStat(session.Boost, allTime?.Boost, "0.0")
+          </div>
+        }
+      </div>
+    }
+  </section>
+}
+
 <section class="card">
   <div class="section-title">
-    <h2>Tracked players</h2>
+    <h2>Stats</h2>
     <span class="muted">@_dashboardPlayers.Count tracked · averages over @TotalGames games</span>
   </div>
 
@@ -104,7 +188,6 @@
         <div class="averages-row">
           <div>
             <strong>@player.Name</strong>
-            <span class="muted">@player.PrimaryId</span>
           </div>
 
           @if (averages is null)
@@ -142,7 +225,13 @@
 
   private IReadOnlyList<ObservedPlayer> _dashboardPlayers = [];
   private IReadOnlyList<PlayerAverages> _averages = [];
+  private IReadOnlyList<SessionAverages> _sessionAverages = [];
   private LiveMatchState? _liveMatch;
+  private MatchSession? _currentSession;
+  private TeamHeadToHeadRecord? _teamRecord;
+  private Dictionary<string, HeadToHeadRecord> _headToHead = new(StringComparer.OrdinalIgnoreCase);
+  private HashSet<string> _myTeamIds = new(StringComparer.OrdinalIgnoreCase);
+  private int _myTeamNum = -1;
 
   private int TotalGames => _averages.Count == 0 ? 0 : _averages.Max(entry => entry.GamesPlayed);
 
@@ -188,7 +277,146 @@
   {
     _dashboardPlayers = await StatsApiStreamService.GetDashboardPlayersAsync();
     _liveMatch = await StatsApiStreamService.GetLiveMatchStateAsync();
-    _averages = await StatsApiStreamService.GetPlayerAveragesAsync(
-      _dashboardPlayers.Select(player => player.PrimaryId));
+    var trackedIds = _dashboardPlayers.Select(player => player.PrimaryId).ToArray();
+    _averages = await StatsApiStreamService.GetPlayerAveragesAsync(trackedIds);
+    _currentSession = await StatsApiStreamService.GetCurrentSessionAsync();
+
+    _sessionAverages = _currentSession is null
+      ? []
+      : await StatsApiStreamService.GetCurrentSessionAveragesAsync(trackedIds);
+
+    await RefreshLiveMatchRecordsAsync();
   }
+
+  private async Task RefreshLiveMatchRecordsAsync()
+  {
+    _headToHead = new(StringComparer.OrdinalIgnoreCase);
+    _teamRecord = null;
+    _myTeamIds = new(StringComparer.OrdinalIgnoreCase);
+    _myTeamNum = -1;
+
+    if (_liveMatch is null || _liveMatch.Players.Count == 0 || _dashboardPlayers.Count == 0)
+    {
+      return;
+    }
+
+    var trackedSet = _dashboardPlayers
+      .Select(player => player.PrimaryId)
+      .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+    var trackedInMatch = _liveMatch.Players
+      .Where(player => trackedSet.Contains(player.PrimaryId))
+      .ToArray();
+
+    if (trackedInMatch.Length == 0)
+    {
+      return;
+    }
+
+    _myTeamNum = trackedInMatch[0].TeamNum;
+    _myTeamIds = _liveMatch.Players
+      .Where(player => player.TeamNum == _myTeamNum)
+      .Select(player => player.PrimaryId)
+      .ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+    var opponentIds = _liveMatch.Players
+      .Where(player => player.TeamNum != _myTeamNum)
+      .Select(player => player.PrimaryId)
+      .ToArray();
+
+    if (opponentIds.Length == 0)
+    {
+      return;
+    }
+
+    var perspective = trackedInMatch[0].PrimaryId;
+    var records = await StatsApiStreamService.GetHeadToHeadAsync(perspective, opponentIds);
+
+    foreach (var record in records)
+    {
+      _headToHead[record.OpponentId] = record;
+    }
+
+    var gameMode = _liveMatch.Players.Count;
+    _teamRecord = await StatsApiStreamService.GetTeamHeadToHeadAsync(
+      _myTeamIds.ToArray(),
+      opponentIds,
+      gameMode);
+  }
+
+  private bool IsOpponent(LivePlayerStats player) =>
+    _myTeamNum >= 0 && player.TeamNum != _myTeamNum;
+
+  private bool TryGetHeadToHead(string primaryId, out HeadToHeadRecord record) =>
+    _headToHead.TryGetValue(primaryId, out record!);
+
+  private static IReadOnlyList<TeamGroup> GetTeams(IReadOnlyList<LivePlayerStats> players) =>
+    players
+      .GroupBy(player => player.TeamNum)
+      .OrderBy(group => group.Key)
+      .Select(group => new TeamGroup(
+        group.Key,
+        group.OrderByDescending(player => player.Score).ToArray()))
+      .ToArray();
+
+  private static string TeamClass(int teamNum) => teamNum switch
+  {
+    0 => "team-blue",
+    1 => "team-orange",
+    _ => "team-unknown"
+  };
+
+  private static string TeamLabel(int teamNum) => teamNum switch
+  {
+    0 => "Blue",
+    1 => "Orange",
+    _ => $"Team {teamNum}"
+  };
+
+  private static string FormatGameMode(int playerCount) =>
+    playerCount > 0 && playerCount % 2 == 0
+      ? $"{playerCount / 2}v{playerCount / 2}"
+      : $"{playerCount} players";
+
+  private static RenderFragment RenderSessionStat(double sessionValue, double? allTimeValue, string format) =>
+    builder =>
+    {
+      builder.OpenElement(0, "span");
+      builder.AddAttribute(1, "class", "session-stat");
+
+      builder.OpenElement(2, "span");
+      builder.AddContent(3, sessionValue.ToString(format));
+      builder.CloseElement();
+
+      if (allTimeValue is not null)
+      {
+        var diff = sessionValue - allTimeValue.Value;
+        var threshold = Math.Pow(10, -GetDecimals(format)) / 2d;
+
+        if (diff > threshold)
+        {
+          builder.OpenElement(4, "span");
+          builder.AddAttribute(5, "class", "chip chip-up");
+          builder.AddContent(6, "+" + diff.ToString(format));
+          builder.CloseElement();
+        }
+        else if (diff < -threshold)
+        {
+          builder.OpenElement(7, "span");
+          builder.AddAttribute(8, "class", "chip chip-down");
+          builder.AddContent(9, diff.ToString(format));
+          builder.CloseElement();
+        }
+      }
+
+      builder.CloseElement();
+    };
+
+  private static int GetDecimals(string format)
+  {
+    var dotIndex = format.IndexOf('.');
+    return dotIndex < 0 ? 0 : format.Length - dotIndex - 1;
+  }
+
+  private sealed record TeamGroup(int TeamNum, IReadOnlyList<LivePlayerStats> Players);
 }

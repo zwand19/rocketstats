@@ -13,4 +13,10 @@ public sealed record PlayerMatchResult(
   int Shots,
   int Touches,
   int Demos,
-  double AverageBoost);
+  double AverageBoost,
+  int TeamNum = 0,
+  int? WinningTeam = null,
+  int GameMode = 0)
+{
+  public bool? Won => WinningTeam is null ? null : WinningTeam == TeamNum;
+}

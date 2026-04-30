@@ -1,0 +1,168 @@
+@page "/games"
+@inject IStatsApiStreamService StatsApiStreamService
+@inject IToastService ToastService
+
+<section class="page-header">
+  <div>
+    <p class="eyebrow">Match history</p>
+    <h1>Games</h1>
+    <p>Every completed match the Stats API has captured. Newest first.</p>
+  </div>
+  <div class="actions">
+    <button class="link-button" @onclick="RefreshClickedAsync">Refresh</button>
+  </div>
+</section>
+
+<section class="card">
+  <div class="section-title">
+    <h2>Matches</h2>
+    <span class="muted">@_page.TotalCount total</span>
+  </div>
+
+  @if (_page.TotalCount == 0)
+  {
+    <p class="muted">No matches recorded yet. Play or watch a replay with the Stats API enabled.</p>
+  }
+  else
+  {
+    <div class="games-list">
+      @foreach (var match in _page.Items)
+      {
+        <article class="game-row">
+          <div class="game-meta">
+            <strong>@match.EndedAt.LocalDateTime.ToString("g")</strong>
+            <span class="muted">@(match.Arena ?? "Unknown arena")</span>
+            <span class="muted">@FormatGameMode(match.GameMode)</span>
+          </div>
+
+          <div class="game-teams">
+            @foreach (var team in match.Players.GroupBy(player => player.TeamNum).OrderBy(group => group.Key))
+            {
+              var isWinner = match.WinningTeam == team.Key;
+              <div class="game-team @TeamClass(team.Key) @(isWinner ? "game-team-winner" : "")">
+                <div class="game-team-header">
+                  <span class="team-dot"></span>
+                  <strong>@TeamLabel(team.Key)</strong>
+                  @if (isWinner)
+                  {
+                    <span class="chip chip-up">W</span>
+                  }
+                </div>
+                @foreach (var player in team)
+                {
+                  <span class="game-player">
+                    <strong>@player.Name</strong>
+                    <span class="muted">@player.Goals G · @player.Assists A · @player.Saves S</span>
+                  </span>
+                }
+              </div>
+            }
+          </div>
+
+          <div class="game-actions">
+            @if (string.Equals(_pendingDeleteId, match.MatchGuid, StringComparison.OrdinalIgnoreCase))
+            {
+              <span class="muted">Delete this match?</span>
+              <button class="secondary-button" @onclick="() => ConfirmDeleteAsync(match.MatchGuid)">Confirm</button>
+              <button class="link-button" @onclick="CancelDelete">Cancel</button>
+            }
+            else
+            {
+              <button class="link-button" @onclick="() => RequestDelete(match.MatchGuid)">Delete</button>
+            }
+          </div>
+        </article>
+      }
+    </div>
+
+    @if (TotalPages > 1)
+    {
+      <div class="pagination">
+        <button class="link-button" disabled="@(_page.Page <= 1)" @onclick="PreviousPageAsync">Previous</button>
+        <span class="muted">Page @_page.Page of @TotalPages</span>
+        <button class="link-button" disabled="@(_page.Page >= TotalPages)" @onclick="NextPageAsync">Next</button>
+      </div>
+    }
+  }
+</section>
+
+@code {
+  private const int PageSize = 20;
+
+  private MatchesPage _page = new([], 1, PageSize, 0);
+  private string? _pendingDeleteId;
+
+  private int TotalPages => (_page.TotalCount + PageSize - 1) / PageSize;
+
+  protected override async Task OnInitializedAsync()
+  {
+    await StartListenerIfNeededAsync();
+    await LoadPageAsync(1);
+  }
+
+  private async Task StartListenerIfNeededAsync()
+  {
+    if (StatsApiStreamService.ConnectionState is StatsApiConnectionState.Stopped or StatsApiConnectionState.Faulted)
+    {
+      await StatsApiStreamService.StartAsync();
+    }
+  }
+
+  private async Task RefreshClickedAsync()
+  {
+    await LoadPageAsync(_page.Page);
+    ToastService.Show("Games refreshed.");
+  }
+
+  private async Task LoadPageAsync(int page)
+  {
+    _page = await StatsApiStreamService.GetMatchesPagedAsync(page, PageSize);
+
+    if (_page.TotalCount > 0 && _page.Items.Count == 0 && _page.Page > 1)
+    {
+      _page = await StatsApiStreamService.GetMatchesPagedAsync(_page.Page - 1, PageSize);
+    }
+
+    _pendingDeleteId = null;
+  }
+
+  private Task PreviousPageAsync() => LoadPageAsync(_page.Page - 1);
+
+  private Task NextPageAsync() => LoadPageAsync(_page.Page + 1);
+
+  private void RequestDelete(string matchGuid)
+  {
+    _pendingDeleteId = matchGuid;
+  }
+
+  private void CancelDelete()
+  {
+    _pendingDeleteId = null;
+  }
+
+  private async Task ConfirmDeleteAsync(string matchGuid)
+  {
+    await StatsApiStreamService.DeleteMatchAsync(matchGuid);
+    ToastService.Show("Match deleted.");
+    await LoadPageAsync(_page.Page);
+  }
+
+  private static string TeamClass(int teamNum) => teamNum switch
+  {
+    0 => "team-blue",
+    1 => "team-orange",
+    _ => "team-unknown"
+  };
+
+  private static string TeamLabel(int teamNum) => teamNum switch
+  {
+    0 => "Blue",
+    1 => "Orange",
+    _ => $"Team {teamNum}"
+  };
+
+  private static string FormatGameMode(int playerCount) =>
+    playerCount > 0 && playerCount % 2 == 0
+      ? $"{playerCount / 2}v{playerCount / 2}"
+      : playerCount == 0 ? "Unknown" : $"{playerCount} players";
+}
