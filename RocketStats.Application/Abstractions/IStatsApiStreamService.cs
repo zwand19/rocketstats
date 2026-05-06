@@ -23,6 +23,14 @@ public interface IStatsApiStreamService
     bool showOnDashboard,
     CancellationToken cancellationToken = default);
 
+  Task SetMeAsync(
+    string? primaryId,
+    CancellationToken cancellationToken = default);
+
+  Task<PlayerStreak?> GetCurrentStreakAsync(
+    string primaryId,
+    CancellationToken cancellationToken = default);
+
   Task<LiveMatchState?> GetLiveMatchStateAsync(
     CancellationToken cancellationToken = default);
 
@@ -31,6 +39,7 @@ public interface IStatsApiStreamService
 
   Task<IReadOnlyList<PlayerAverages>> GetPlayerAveragesAsync(
     IEnumerable<string>? primaryIds = null,
+    int? gameMode = null,
     CancellationToken cancellationToken = default);
 
   Task<IReadOnlyList<MatchSession>> GetSessionsAsync(
@@ -50,6 +59,12 @@ public interface IStatsApiStreamService
     CancellationToken cancellationToken = default);
 
   Task<TeamHeadToHeadRecord?> GetTeamHeadToHeadAsync(
+    IReadOnlyList<string> myTeamIds,
+    IReadOnlyList<string> opponentIds,
+    int gameMode,
+    CancellationToken cancellationToken = default);
+
+  Task<TeamRematchSummary?> GetTeamRematchSummaryAsync(
     IReadOnlyList<string> myTeamIds,
     IReadOnlyList<string> opponentIds,
     int gameMode,

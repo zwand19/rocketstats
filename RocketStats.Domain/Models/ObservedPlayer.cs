@@ -6,4 +6,5 @@ public sealed record ObservedPlayer(
   int TeamNum,
   DateTimeOffset FirstSeenAt,
   DateTimeOffset LastSeenAt,
-  bool ShowOnDashboard = false);
+  bool ShowOnDashboard = false,
+  bool IsMe = false);

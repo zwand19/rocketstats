@@ -1,0 +1,173 @@
+@inject IStatsApiStreamService StatsApiStreamService
+
+@if (Player is not null)
+{
+  <div class="modal-overlay" @onclick="OnOverlayClick">
+    <div class="modal-card" @onclick:stopPropagation>
+      <header class="modal-header">
+        <div class="modal-title">
+          <h2>@Player.Name</h2>
+          <div class="modal-chips">
+            @if (Player.IsMe)
+            {
+              <span class="chip chip-me">Me</span>
+            }
+            @if (Player.ShowOnDashboard)
+            {
+              <span class="chip chip-tracked">Tracked</span>
+            }
+          </div>
+        </div>
+        <button class="link-button" @onclick="Close">Close</button>
+      </header>
+
+      <div class="modal-actions">
+        <button class="link-button @(Player.ShowOnDashboard ? "accent-danger" : "accent-positive")"
+                @onclick="ToggleTrackAsync">
+          @(Player.ShowOnDashboard ? "Untrack" : "Track")
+        </button>
+        @if (!Player.IsMe && !MeIsSet)
+        {
+          <button class="link-button accent-info" @onclick="SetMeAsync">Set as me</button>
+        }
+        <span class="muted modal-meta">Last seen @Player.LastSeenAt.LocalDateTime.ToString("g")</span>
+      </div>
+
+      @if (_loading)
+      {
+        <p class="muted">Loading…</p>
+      }
+      else
+      {
+        @if (_averages is null)
+        {
+          <p class="muted">No completed matches recorded for this player yet.</p>
+        }
+        else
+        {
+          <section class="modal-section">
+            <h3>Career averages</h3>
+            <div class="modal-stats-grid">
+              <div><span class="muted">GP</span><strong>@_averages.GamesPlayed</strong></div>
+              <div><span class="muted">MVP %</span><strong>@_averages.MvpPercent.ToString("0")%</strong></div>
+              <div><span class="muted">Score/g</span><strong>@_averages.Score.ToString("0.0")</strong></div>
+              <div><span class="muted">Goals/g</span><strong>@_averages.Goals.ToString("0.00")</strong></div>
+              <div><span class="muted">Assists/g</span><strong>@_averages.Assists.ToString("0.00")</strong></div>
+              <div><span class="muted">Saves/g</span><strong>@_averages.Saves.ToString("0.00")</strong></div>
+              <div><span class="muted">Shots/g</span><strong>@_averages.Shots.ToString("0.00")</strong></div>
+              <div><span class="muted">Touches/g</span><strong>@_averages.Touches.ToString("0.0")</strong></div>
+              <div><span class="muted">Demos/g</span><strong>@_averages.Demos.ToString("0.00")</strong></div>
+              <div><span class="muted">Demoed/g</span><strong>@FormatNullable(_averages.Demoed, "0.00")</strong></div>
+              <div><span class="muted">Speed (km/h)</span><strong>@FormatNullable(_averages.AverageSpeedKph, "0")</strong></div>
+              <div><span class="muted">SS %</span><strong>@FormatNullable(_averages.SupersonicPercent, "0", "%")</strong></div>
+              <div><span class="muted">Boost avg</span><strong>@_averages.Boost.ToString("0.0")</strong></div>
+            </div>
+          </section>
+        }
+
+        @if (!Player.ShowOnDashboard && !Player.IsMe && MeIsSet)
+        {
+          <section class="modal-section">
+            <h3>Lifetime vs you</h3>
+            @if (_headToHead is null)
+            {
+              <p class="muted">You haven't faced @Player.Name in any recorded match.</p>
+            }
+            else
+            {
+              <div class="modal-h2h">
+                <strong class="record-text">@_headToHead.Wins-@_headToHead.Losses</strong>
+                <span class="muted">over @_headToHead.GamesPlayed @(_headToHead.GamesPlayed == 1 ? "game" : "games")</span>
+              </div>
+            }
+          </section>
+        }
+      }
+    </div>
+  </div>
+}
+
+@code {
+  [Parameter]
+  public ObservedPlayer? Player { get; set; }
+
+  [Parameter]
+  public string? MePrimaryId { get; set; }
+
+  [Parameter]
+  public EventCallback OnClose { get; set; }
+
+  [Parameter]
+  public EventCallback<(ObservedPlayer Player, bool ShowOnDashboard)> OnTrackChanged { get; set; }
+
+  [Parameter]
+  public EventCallback<ObservedPlayer> OnSetMe { get; set; }
+
+  private PlayerAverages? _averages;
+  private HeadToHeadRecord? _headToHead;
+  private bool _loading;
+  private string? _loadedFor;
+
+  private bool MeIsSet => !string.IsNullOrWhiteSpace(MePrimaryId);
+
+  protected override async Task OnParametersSetAsync()
+  {
+    if (Player is null)
+    {
+      _averages = null;
+      _headToHead = null;
+      _loadedFor = null;
+      return;
+    }
+
+    if (string.Equals(_loadedFor, Player.PrimaryId, StringComparison.OrdinalIgnoreCase))
+    {
+      return;
+    }
+
+    _loadedFor = Player.PrimaryId;
+    _loading = true;
+    _averages = null;
+    _headToHead = null;
+
+    var averagesTask = StatsApiStreamService.GetPlayerAveragesAsync(new[] { Player.PrimaryId });
+    var h2hTask = !Player.ShowOnDashboard && !Player.IsMe && MeIsSet
+      ? StatsApiStreamService.GetHeadToHeadAsync(MePrimaryId!, new[] { Player.PrimaryId })
+      : Task.FromResult<IReadOnlyList<HeadToHeadRecord>>([]);
+
+    var averages = await averagesTask;
+    var h2h = await h2hTask;
+
+    _averages = averages.FirstOrDefault();
+    _headToHead = h2h.FirstOrDefault();
+    _loading = false;
+  }
+
+  private Task Close() => OnClose.InvokeAsync();
+
+  private Task OnOverlayClick() => OnClose.InvokeAsync();
+
+  private async Task ToggleTrackAsync()
+  {
+    if (Player is null)
+    {
+      return;
+    }
+
+    var next = !Player.ShowOnDashboard;
+    await OnTrackChanged.InvokeAsync((Player, next));
+  }
+
+  private async Task SetMeAsync()
+  {
+    if (Player is null)
+    {
+      return;
+    }
+
+    await OnSetMe.InvokeAsync(Player);
+  }
+
+  private static string FormatNullable(double? value, string format, string suffix = "") =>
+    value is null ? "—" : value.Value.ToString(format) + suffix;
+}

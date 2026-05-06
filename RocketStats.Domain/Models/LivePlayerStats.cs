@@ -12,4 +12,7 @@ public sealed record LivePlayerStats(
   int Touches,
   int Demos,
   int Boost,
-  DateTimeOffset UpdatedAt);
+  DateTimeOffset UpdatedAt,
+  double Speed = 0d,
+  bool IsSupersonic = false,
+  bool HasCar = false);

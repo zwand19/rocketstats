@@ -16,7 +16,10 @@ public sealed record PlayerMatchResult(
   double AverageBoost,
   int TeamNum = 0,
   int? WinningTeam = null,
-  int GameMode = 0)
+  int GameMode = 0,
+  double? AverageSpeedKph = null,
+  double? SupersonicPercent = null,
+  int? TimesDemoed = null)
 {
   public bool? Won => WinningTeam is null ? null : WinningTeam == TeamNum;
 }

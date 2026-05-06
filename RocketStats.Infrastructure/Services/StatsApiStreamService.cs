@@ -14,9 +14,12 @@ public sealed class StatsApiStreamService : IStatsApiStreamService, IAsyncDispos
 {
   private const string ObservedPlayersKey = "stats-api-observed-players";
   private const string DashboardPlayerIdsKey = "stats-api-dashboard-player-ids";
+  private const string MePrimaryIdKey = "stats-api-me-primary-id";
   private const string EventLogKey = "stats-api-event-log";
   private const string MatchResultsKey = "stats-api-match-results";
   private const string SessionsKey = "stats-api-sessions";
+
+  private const int RecentlyFlushedCapacity = 16;
 
   private static readonly TimeSpan SessionGap = TimeSpan.FromHours(1);
 
@@ -25,6 +28,8 @@ public sealed class StatsApiStreamService : IStatsApiStreamService, IAsyncDispos
   private readonly SemaphoreSlim _gate = new(1, 1);
   private readonly SemaphoreSlim _sessionGate = new(1, 1);
   private readonly Dictionary<string, MatchAggregate> _matchAggregates = new(StringComparer.OrdinalIgnoreCase);
+  private readonly HashSet<string> _recentlyFlushedSet = new(StringComparer.OrdinalIgnoreCase);
+  private readonly Queue<string> _recentlyFlushedQueue = new();
   private readonly IAppendOnlyStorageService _appendStorage;
   private readonly ILocalStorageService _localStorage;
   private readonly ILogger<StatsApiStreamService> _logger;
@@ -104,8 +109,9 @@ public sealed class StatsApiStreamService : IStatsApiStreamService, IAsyncDispos
   {
     var players = await ReadObservedPlayersAsync(cancellationToken);
     var dashboardPlayerIds = await ReadDashboardPlayerIdsAsync(cancellationToken);
+    var mePrimaryId = await ReadMePrimaryIdAsync(cancellationToken);
 
-    return ApplyDashboardVisibility(players, dashboardPlayerIds);
+    return ApplyPlayerFlags(players, dashboardPlayerIds, mePrimaryId);
   }
 
   public async Task<IReadOnlyList<ObservedPlayer>> GetDashboardPlayersAsync(
@@ -185,6 +191,71 @@ public sealed class StatsApiStreamService : IStatsApiStreamService, IAsyncDispos
     }
   }
 
+  public async Task SetMeAsync(
+    string? primaryId,
+    CancellationToken cancellationToken = default)
+  {
+    await _gate.WaitAsync(cancellationToken);
+
+    try
+    {
+      if (string.IsNullOrWhiteSpace(primaryId))
+      {
+        await _localStorage.RemoveAsync(MePrimaryIdKey, cancellationToken);
+        _logger.LogInformation("Cleared 'me' player.");
+      }
+      else
+      {
+        await _localStorage.WriteAsync(MePrimaryIdKey, primaryId, cancellationToken);
+        _logger.LogInformation("Set 'me' player to {PrimaryId}.", primaryId);
+      }
+    }
+    finally
+    {
+      _gate.Release();
+    }
+  }
+
+  public async Task<PlayerStreak?> GetCurrentStreakAsync(
+    string primaryId,
+    CancellationToken cancellationToken = default)
+  {
+    if (string.IsNullOrWhiteSpace(primaryId))
+    {
+      return null;
+    }
+
+    var results = await _appendStorage.ReadAllAsync<PlayerMatchResult>(MatchResultsKey, cancellationToken);
+    var ordered = results
+      .Where(result =>
+        string.Equals(result.PrimaryId, primaryId, StringComparison.OrdinalIgnoreCase) &&
+        result.Won.HasValue)
+      .OrderByDescending(result => result.EndedAt)
+      .ToArray();
+
+    if (ordered.Length == 0)
+    {
+      return null;
+    }
+
+    var isWinning = ordered[0].Won!.Value;
+    var count = 0;
+
+    foreach (var result in ordered)
+    {
+      if (result.Won == isWinning)
+      {
+        count++;
+      }
+      else
+      {
+        break;
+      }
+    }
+
+    return new PlayerStreak(primaryId, count, isWinning);
+  }
+
   public Task<LiveMatchState?> GetLiveMatchStateAsync(
     CancellationToken cancellationToken = default) =>
     Task.FromResult(_liveMatchState);
@@ -202,13 +273,18 @@ public sealed class StatsApiStreamService : IStatsApiStreamService, IAsyncDispos
 
   public async Task<IReadOnlyList<PlayerAverages>> GetPlayerAveragesAsync(
     IEnumerable<string>? primaryIds = null,
+    int? gameMode = null,
     CancellationToken cancellationToken = default)
   {
-    var results = await _appendStorage.ReadAllAsync<PlayerMatchResult>(MatchResultsKey, cancellationToken);
+    var allResults = await _appendStorage.ReadAllAsync<PlayerMatchResult>(MatchResultsKey, cancellationToken);
+    var modeFiltered = gameMode is null
+      ? allResults
+      : allResults.Where(result => result.GameMode == gameMode).ToArray();
+    var maxScoreByMatch = ComputeMaxScoreByMatch(modeFiltered);
     var filter = primaryIds?.ToHashSet(StringComparer.OrdinalIgnoreCase);
     var filtered = filter is null
-      ? results
-      : results.Where(result => filter.Contains(result.PrimaryId)).ToArray();
+      ? modeFiltered
+      : modeFiltered.Where(result => filter.Contains(result.PrimaryId)).ToArray();
 
     return filtered
       .GroupBy(result => result.PrimaryId, StringComparer.OrdinalIgnoreCase)
@@ -216,6 +292,7 @@ public sealed class StatsApiStreamService : IStatsApiStreamService, IAsyncDispos
       {
         var games = group.Count();
         var latestName = group.OrderByDescending(result => result.EndedAt).First().Name;
+        var mvps = group.Count(result => IsMvp(result, maxScoreByMatch));
 
         return new PlayerAverages(
           group.Key,
@@ -228,11 +305,32 @@ public sealed class StatsApiStreamService : IStatsApiStreamService, IAsyncDispos
           group.Average(result => (double)result.Shots),
           group.Average(result => (double)result.Touches),
           group.Average(result => (double)result.Demos),
-          group.Average(result => result.AverageBoost));
+          group.Average(result => result.AverageBoost),
+          mvps,
+          AverageNullable(group, result => result.AverageSpeedKph),
+          AverageNullable(group, result => result.SupersonicPercent),
+          AverageNullable(group, result => (double?)result.TimesDemoed));
       })
       .OrderByDescending(averages => averages.Goals)
       .ToArray();
   }
+
+  private static double? AverageNullable<T>(IEnumerable<T> source, Func<T, double?> selector)
+  {
+    var values = source.Select(selector).Where(value => value.HasValue).Select(value => value!.Value).ToArray();
+    return values.Length == 0 ? null : values.Average();
+  }
+
+  private static Dictionary<string, int> ComputeMaxScoreByMatch(IReadOnlyList<PlayerMatchResult> results) =>
+    results
+      .GroupBy(result => result.MatchGuid, StringComparer.OrdinalIgnoreCase)
+      .ToDictionary(
+        group => group.Key,
+        group => group.Max(result => result.Score),
+        StringComparer.OrdinalIgnoreCase);
+
+  private static bool IsMvp(PlayerMatchResult result, IReadOnlyDictionary<string, int> maxScoreByMatch) =>
+    maxScoreByMatch.TryGetValue(result.MatchGuid, out var max) && result.Score == max;
 
   public async Task<IReadOnlyList<MatchSession>> GetSessionsAsync(
     CancellationToken cancellationToken = default)
@@ -271,8 +369,12 @@ public sealed class StatsApiStreamService : IStatsApiStreamService, IAsyncDispos
     var matchGuidSet = session.MatchGuids.ToHashSet(StringComparer.OrdinalIgnoreCase);
     var primaryIdSet = primaryIds.ToHashSet(StringComparer.OrdinalIgnoreCase);
     var allResults = await _appendStorage.ReadAllAsync<PlayerMatchResult>(MatchResultsKey, cancellationToken);
-    var inSession = allResults
-      .Where(result => matchGuidSet.Contains(result.MatchGuid) && primaryIdSet.Contains(result.PrimaryId))
+    var sessionResults = allResults
+      .Where(result => matchGuidSet.Contains(result.MatchGuid))
+      .ToArray();
+    var maxScoreByMatch = ComputeMaxScoreByMatch(sessionResults);
+    var inSession = sessionResults
+      .Where(result => primaryIdSet.Contains(result.PrimaryId))
       .ToArray();
 
     return inSession
@@ -283,6 +385,7 @@ public sealed class StatsApiStreamService : IStatsApiStreamService, IAsyncDispos
         var latest = group.OrderByDescending(result => result.EndedAt).First();
         var wins = group.Count(result => result.Won == true);
         var losses = group.Count(result => result.Won == false);
+        var mvps = group.Count(result => IsMvp(result, maxScoreByMatch));
 
         return new SessionAverages(
           session.Id,
@@ -298,7 +401,11 @@ public sealed class StatsApiStreamService : IStatsApiStreamService, IAsyncDispos
           group.Average(result => (double)result.Shots),
           group.Average(result => (double)result.Touches),
           group.Average(result => (double)result.Demos),
-          group.Average(result => result.AverageBoost));
+          group.Average(result => result.AverageBoost),
+          mvps,
+          AverageNullable(group, result => result.AverageSpeedKph),
+          AverageNullable(group, result => result.SupersonicPercent),
+          AverageNullable(group, result => (double?)result.TimesDemoed));
       })
       .ToArray();
   }
@@ -433,6 +540,129 @@ public sealed class StatsApiStreamService : IStatsApiStreamService, IAsyncDispos
     return new TeamHeadToHeadRecord(myTeamIds, opponentIds, gameMode, wins, losses);
   }
 
+  public async Task<TeamRematchSummary?> GetTeamRematchSummaryAsync(
+    IReadOnlyList<string> myTeamIds,
+    IReadOnlyList<string> opponentIds,
+    int gameMode,
+    CancellationToken cancellationToken = default)
+  {
+    if (myTeamIds.Count == 0 || opponentIds.Count == 0)
+    {
+      return null;
+    }
+
+    var myTeamSet = myTeamIds.ToHashSet(StringComparer.OrdinalIgnoreCase);
+    var opponentSet = opponentIds.ToHashSet(StringComparer.OrdinalIgnoreCase);
+    var allResults = await _appendStorage.ReadAllAsync<PlayerMatchResult>(MatchResultsKey, cancellationToken);
+    var session = await GetCurrentSessionAsync(cancellationToken);
+    var sessionGuids = session?.MatchGuids.ToHashSet(StringComparer.OrdinalIgnoreCase)
+      ?? new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+    var orderedMatches = allResults
+      .Where(result => result.GameMode == gameMode && result.WinningTeam is not null)
+      .GroupBy(result => result.MatchGuid, StringComparer.OrdinalIgnoreCase)
+      .Select(group =>
+      {
+        var teamGroups = group
+          .GroupBy(result => result.TeamNum)
+          .Select(team => new
+          {
+            Players = team.Select(player => player.PrimaryId).ToHashSet(StringComparer.OrdinalIgnoreCase),
+            Won = team.First().Won == true
+          })
+          .ToArray();
+
+        return new
+        {
+          MatchGuid = group.Key,
+          EndedAt = group.Max(player => player.EndedAt),
+          TeamGroups = teamGroups
+        };
+      })
+      .OrderByDescending(match => match.EndedAt)
+      .ToArray();
+
+    var allTimeWins = 0;
+    var allTimeLosses = 0;
+    var sessionWins = 0;
+    var sessionLosses = 0;
+    var streakWins = 0;
+    var streakLosses = 0;
+    var streakActive = true;
+
+    foreach (var match in orderedMatches)
+    {
+      if (match.TeamGroups.Length != 2)
+      {
+        streakActive = false;
+        continue;
+      }
+
+      var myTeam = match.TeamGroups.FirstOrDefault(team => team.Players.SetEquals(myTeamSet));
+      var opponentTeam = match.TeamGroups.FirstOrDefault(team => team.Players.SetEquals(opponentSet));
+      var matched = myTeam is not null && opponentTeam is not null;
+
+      if (matched)
+      {
+        if (myTeam!.Won)
+        {
+          allTimeWins++;
+        }
+        else
+        {
+          allTimeLosses++;
+        }
+
+        if (sessionGuids.Contains(match.MatchGuid))
+        {
+          if (myTeam.Won)
+          {
+            sessionWins++;
+          }
+          else
+          {
+            sessionLosses++;
+          }
+        }
+
+        if (streakActive)
+        {
+          if (myTeam.Won)
+          {
+            streakWins++;
+          }
+          else
+          {
+            streakLosses++;
+          }
+        }
+      }
+      else
+      {
+        streakActive = false;
+      }
+    }
+
+    var allTimeGames = allTimeWins + allTimeLosses;
+
+    if (allTimeGames == 0)
+    {
+      return null;
+    }
+
+    return new TeamRematchSummary(
+      gameMode,
+      streakWins + streakLosses,
+      streakWins,
+      streakLosses,
+      allTimeGames,
+      allTimeWins,
+      allTimeLosses,
+      sessionWins + sessionLosses,
+      sessionWins,
+      sessionLosses);
+  }
+
   public async Task<MatchesPage> GetMatchesPagedAsync(
     int page,
     int pageSize,
@@ -558,6 +788,7 @@ public sealed class StatsApiStreamService : IStatsApiStreamService, IAsyncDispos
   private async Task UpsertSessionForMatchAsync(
     string matchGuid,
     DateTimeOffset endedAt,
+    int gameMode,
     CancellationToken cancellationToken)
   {
     await _sessionGate.WaitAsync(cancellationToken);
@@ -567,7 +798,9 @@ public sealed class StatsApiStreamService : IStatsApiStreamService, IAsyncDispos
       var sessions = await _appendStorage.ReadAllAsync<MatchSession>(SessionsKey, cancellationToken);
       var latest = sessions.Count == 0 ? null : sessions[^1];
 
-      if (latest is not null && endedAt - latest.EndedAt <= SessionGap)
+      if (latest is not null &&
+          endedAt - latest.EndedAt <= SessionGap &&
+          latest.GameMode == gameMode)
       {
         if (latest.MatchGuids.Any(existing =>
           string.Equals(existing, matchGuid, StringComparison.OrdinalIgnoreCase)))
@@ -585,7 +818,8 @@ public sealed class StatsApiStreamService : IStatsApiStreamService, IAsyncDispos
         Guid.NewGuid().ToString("N"),
         endedAt,
         endedAt,
-        new[] { matchGuid });
+        new[] { matchGuid },
+        gameMode);
 
       await _appendStorage.AppendAsync(SessionsKey, session, cancellationToken);
     }
@@ -748,6 +982,10 @@ public sealed class StatsApiStreamService : IStatsApiStreamService, IAsyncDispos
     {
       await FlushMatchAsync(matchGuid ?? _activeMatchGuid, cancellationToken);
     }
+    else if (string.Equals(eventName, "StatfeedEvent", StringComparison.OrdinalIgnoreCase))
+    {
+      HandleStatfeedEvent(matchGuid ?? _activeMatchGuid, data);
+    }
 
     await AppendEventAsync(
       new StatsApiEventLogEntry(Guid.NewGuid().ToString("N"), eventName, matchGuid, DateTimeOffset.UtcNow, rawJson),
@@ -804,15 +1042,25 @@ public sealed class StatsApiStreamService : IStatsApiStreamService, IAsyncDispos
         GetInt(player, "Touches"),
         GetInt(player, "Demos"),
         GetInt(player, "Boost"),
-        now))
+        now,
+        GetDouble(player, "Speed"),
+        GetBool(player, "bSupersonic"),
+        GetBool(player, "bHasCar")))
       .Where(player => !string.IsNullOrWhiteSpace(player.PrimaryId))
       .ToArray();
 
     await UpsertObservedPlayersAsync(livePlayers, cancellationToken);
     var matchState = CreateLiveMatchState(data, livePlayers, now);
-    _liveMatchState = matchState;
-
     var matchGuid = matchState.MatchGuid;
+
+    // Late frames for a match we've already finalized would otherwise resurrect the aggregate
+    // and produce a duplicate result on the next match-guid switch.
+    if (!string.IsNullOrWhiteSpace(matchGuid) && _recentlyFlushedSet.Contains(matchGuid))
+    {
+      return;
+    }
+
+    _liveMatchState = matchState;
 
     // A new MatchGuid means the previous match ended without a MatchEnded event being seen yet — flush it now.
     if (!string.IsNullOrWhiteSpace(_activeMatchGuid) &&
@@ -868,7 +1116,59 @@ public sealed class StatsApiStreamService : IStatsApiStreamService, IAsyncDispos
       playerAgg.LatestDemos = player.Demos;
       playerAgg.BoostSum += player.Boost;
       playerAgg.BoostSamples++;
+
+      if (player.HasCar)
+      {
+        playerAgg.SpeedSumUu += player.Speed;
+        playerAgg.SpeedSamples++;
+
+        if (player.IsSupersonic)
+        {
+          playerAgg.SupersonicSamples++;
+        }
+      }
     }
+  }
+
+  private void HandleStatfeedEvent(string? matchGuid, JsonElement data)
+  {
+    if (string.IsNullOrWhiteSpace(matchGuid) ||
+        !_matchAggregates.TryGetValue(matchGuid, out var aggregate))
+    {
+      return;
+    }
+
+    var statEventName = GetString(data, "EventName");
+
+    if (!string.Equals(statEventName, "Demolish", StringComparison.OrdinalIgnoreCase))
+    {
+      return;
+    }
+
+    if (!TryGetProperty(data, "SecondaryTarget", out var target) ||
+        target.ValueKind != JsonValueKind.Object)
+    {
+      return;
+    }
+
+    var name = GetString(target, "Name");
+
+    if (string.IsNullOrWhiteSpace(name))
+    {
+      return;
+    }
+
+    var teamNum = GetInt(target, "TeamNum");
+    var demoed = aggregate.Players.Values.FirstOrDefault(player =>
+      string.Equals(player.Name, name, StringComparison.OrdinalIgnoreCase) &&
+      player.TeamNum == teamNum);
+
+    if (demoed is null)
+    {
+      return;
+    }
+
+    demoed.TimesDemoed++;
   }
 
   private static bool TryParseWinningTeam(string? winner, out int team)
@@ -908,6 +1208,8 @@ public sealed class StatsApiStreamService : IStatsApiStreamService, IAsyncDispos
       return;
     }
 
+    RememberFlushedMatch(matchGuid);
+
     if (!_matchAggregates.Remove(matchGuid, out var aggregate))
     {
       return;
@@ -928,6 +1230,13 @@ public sealed class StatsApiStreamService : IStatsApiStreamService, IAsyncDispos
         ? (double)player.BoostSum / player.BoostSamples
         : 0d;
 
+      double? averageSpeedKph = player.SpeedSamples > 0
+        ? player.SpeedSumUu / player.SpeedSamples * 0.036d
+        : null;
+      double? supersonicPercent = player.SpeedSamples > 0
+        ? (double)player.SupersonicSamples / player.SpeedSamples * 100d
+        : null;
+
       var result = new PlayerMatchResult(
         player.PrimaryId,
         player.Name,
@@ -944,7 +1253,10 @@ public sealed class StatsApiStreamService : IStatsApiStreamService, IAsyncDispos
         averageBoost,
         player.TeamNum,
         winningTeam,
-        gameMode);
+        gameMode,
+        averageSpeedKph,
+        supersonicPercent,
+        player.TimesDemoed);
 
       await _appendStorage.AppendAsync(MatchResultsKey, result, cancellationToken);
     }
@@ -956,7 +1268,23 @@ public sealed class StatsApiStreamService : IStatsApiStreamService, IAsyncDispos
 
     await _appendStorage.TrimAsync(MatchResultsKey, _options.StoredMatchLimit, cancellationToken);
 
-    await UpsertSessionForMatchAsync(aggregate.MatchGuid, endedAt, cancellationToken);
+    await UpsertSessionForMatchAsync(aggregate.MatchGuid, endedAt, gameMode, cancellationToken);
+  }
+
+  private void RememberFlushedMatch(string matchGuid)
+  {
+    if (!_recentlyFlushedSet.Add(matchGuid))
+    {
+      return;
+    }
+
+    _recentlyFlushedQueue.Enqueue(matchGuid);
+
+    while (_recentlyFlushedQueue.Count > RecentlyFlushedCapacity)
+    {
+      var evicted = _recentlyFlushedQueue.Dequeue();
+      _recentlyFlushedSet.Remove(evicted);
+    }
   }
 
   private static int? DeriveWinningTeamFromGoals(IEnumerable<PlayerMatchAggregate> players)
@@ -1032,6 +1360,14 @@ public sealed class StatsApiStreamService : IStatsApiStreamService, IAsyncDispos
     public long BoostSum { get; set; }
 
     public int BoostSamples { get; set; }
+
+    public double SpeedSumUu { get; set; }
+
+    public int SpeedSamples { get; set; }
+
+    public int SupersonicSamples { get; set; }
+
+    public int TimesDemoed { get; set; }
   }
 
   private async Task UpsertObservedPlayersAsync(
@@ -1127,11 +1463,20 @@ public sealed class StatsApiStreamService : IStatsApiStreamService, IAsyncDispos
     return playerIds.ToHashSet(StringComparer.OrdinalIgnoreCase);
   }
 
-  private static IReadOnlyList<ObservedPlayer> ApplyDashboardVisibility(
+  private async Task<string?> ReadMePrimaryIdAsync(CancellationToken cancellationToken) =>
+    await _localStorage.ReadAsync<string>(MePrimaryIdKey, cancellationToken);
+
+  private static IReadOnlyList<ObservedPlayer> ApplyPlayerFlags(
     IReadOnlyList<ObservedPlayer> players,
-    HashSet<string> dashboardPlayerIds) =>
+    HashSet<string> dashboardPlayerIds,
+    string? mePrimaryId) =>
     players
-      .Select(player => player with { ShowOnDashboard = dashboardPlayerIds.Contains(player.PrimaryId) })
+      .Select(player => player with
+      {
+        ShowOnDashboard = dashboardPlayerIds.Contains(player.PrimaryId),
+        IsMe = !string.IsNullOrWhiteSpace(mePrimaryId) &&
+          string.Equals(mePrimaryId, player.PrimaryId, StringComparison.OrdinalIgnoreCase)
+      })
       .ToArray();
 
   private static string? GetString(JsonElement element, string name)
@@ -1159,6 +1504,24 @@ public sealed class StatsApiStreamService : IStatsApiStreamService, IAsyncDispos
     return value.ValueKind == JsonValueKind.String && int.TryParse(value.GetString(), out number)
       ? number
       : 0;
+  }
+
+  private static double GetDouble(JsonElement element, string name)
+  {
+    if (!TryGetProperty(element, name, out var value))
+    {
+      return 0d;
+    }
+
+    if (value.ValueKind == JsonValueKind.Number && value.TryGetDouble(out var number))
+    {
+      return number;
+    }
+
+    return value.ValueKind == JsonValueKind.String &&
+        double.TryParse(value.GetString(), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out number)
+      ? number
+      : 0d;
   }
 
   private static bool GetBool(JsonElement element, string name) =>

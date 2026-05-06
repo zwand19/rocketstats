@@ -31,7 +31,7 @@
         <article class="game-row">
           <div class="game-meta">
             <strong>@match.EndedAt.LocalDateTime.ToString("g")</strong>
-            <span class="muted">@(match.Arena ?? "Unknown arena")</span>
+            <span class="muted">@ArenaNames.GetDisplayName(match.Arena)</span>
             <span class="muted">@FormatGameMode(match.GameMode)</span>
           </div>
 

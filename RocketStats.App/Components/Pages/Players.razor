@@ -7,7 +7,7 @@
   <div>
     <p class="eyebrow">Tracking management</p>
     <h1>Players</h1>
-    <p>Everyone seen by the Stats API is collected. Toggle which players appear on the dashboard.</p>
+    <p>Everyone seen by the Stats API is collected. Click a player for stats; toggle whether they appear on the dashboard.</p>
   </div>
   <div class="actions">
     <button class="link-button" @onclick="RefreshClickedAsync">Refresh</button>
@@ -17,7 +17,7 @@
 <section class="card">
   <div class="section-title">
     <h2>Observed players</h2>
-    <span class="muted">@_players.Count total · @StatsApiStreamService.ConnectionState</span>
+    <span class="muted">@_filteredPlayers.Count of @_players.Count · @StatsApiStreamService.ConnectionState</span>
   </div>
 
   @if (!string.IsNullOrWhiteSpace(StatsApiStreamService.LastError))
@@ -25,28 +25,54 @@
     <section class="alert">@StatsApiStreamService.LastError</section>
   }
 
+  <div class="player-search">
+    <input class="input" type="search" placeholder="Search by name…"
+           value="@_search" @oninput="OnSearchInput" />
+    @if (!string.IsNullOrWhiteSpace(_search))
+    {
+      <button class="link-button" @onclick="ClearSearch">Clear</button>
+    }
+  </div>
+
   @if (_players.Count == 0)
   {
     <p class="muted">No players have been observed yet. Enable the Stats API in Rocket League, then start a match or replay.</p>
+  }
+  else if (_filteredPlayers.Count == 0)
+  {
+    <p class="muted">No players match "@_search".</p>
   }
   else
   {
     <div class="player-table">
       <div class="player-row player-row-header">
-        <span>Dashboard</span>
         <span>Name</span>
+        <span>Status</span>
         <span>Last seen</span>
       </div>
 
-      @foreach (var player in _players)
+      @foreach (var player in _filteredPlayers)
       {
-        <div class="player-row">
-          <button class="link-button" @onclick="() => ToggleDashboardVisibilityAsync(player)">
-            @(player.ShowOnDashboard ? "Untrack" : "Track")
-          </button>
-          <strong>@player.Name</strong>
+        <button type="button" class="player-row player-row-button" @onclick="() => OpenModal(player)">
+          <strong>
+            @player.Name
+            @if (player.IsMe)
+            {
+              <span class="chip chip-me">Me</span>
+            }
+          </strong>
+          <span>
+            @if (player.ShowOnDashboard)
+            {
+              <span class="chip chip-tracked">Tracked</span>
+            }
+            else
+            {
+              <span class="muted">—</span>
+            }
+          </span>
           <span>@player.LastSeenAt.LocalDateTime.ToString("g")</span>
-        </div>
+        </button>
       }
     </div>
   }
@@ -60,8 +86,18 @@
   </p>
 </section>
 
+<PlayerDetailsModal Player="_selectedPlayer"
+                    MePrimaryId="@_mePrimaryId"
+                    OnClose="CloseModal"
+                    OnTrackChanged="HandleTrackChangedAsync"
+                    OnSetMe="HandleSetMeAsync" />
+
 @code {
   private IReadOnlyList<ObservedPlayer> _players = [];
+  private IReadOnlyList<ObservedPlayer> _filteredPlayers = [];
+  private ObservedPlayer? _selectedPlayer;
+  private string? _mePrimaryId;
+  private string _search = string.Empty;
 
   protected override async Task OnInitializedAsync()
   {
@@ -86,28 +122,78 @@
   private async Task RefreshAsync()
   {
     _players = await StatsApiStreamService.GetObservedPlayersAsync();
+    _mePrimaryId = _players.FirstOrDefault(player => player.IsMe)?.PrimaryId;
+    ApplyFilter();
+
+    if (_selectedPlayer is not null)
+    {
+      _selectedPlayer = _players.FirstOrDefault(player =>
+        string.Equals(player.PrimaryId, _selectedPlayer.PrimaryId, StringComparison.OrdinalIgnoreCase));
+    }
+
     Logger.LogInformation(
       "Players page loaded {PlayerCount} observed players with {DashboardPlayerCount} selected for dashboard.",
       _players.Count,
       _players.Count(player => player.ShowOnDashboard));
   }
 
-  private async Task ToggleDashboardVisibilityAsync(ObservedPlayer player)
+  private void ApplyFilter()
   {
-    var showOnDashboard = !player.ShowOnDashboard;
+    if (string.IsNullOrWhiteSpace(_search))
+    {
+      _filteredPlayers = _players;
+      return;
+    }
+
+    _filteredPlayers = _players
+      .Where(player => player.Name.Contains(_search, StringComparison.OrdinalIgnoreCase))
+      .ToArray();
+  }
+
+  private void OnSearchInput(ChangeEventArgs args)
+  {
+    _search = args.Value?.ToString() ?? string.Empty;
+    ApplyFilter();
+  }
+
+  private void ClearSearch()
+  {
+    _search = string.Empty;
+    ApplyFilter();
+  }
+
+  private void OpenModal(ObservedPlayer player)
+  {
+    _selectedPlayer = player;
+  }
+
+  private void CloseModal()
+  {
+    _selectedPlayer = null;
+  }
+
+  private async Task HandleTrackChangedAsync((ObservedPlayer Player, bool ShowOnDashboard) change)
+  {
     Logger.LogInformation(
       "Players page toggling dashboard visibility for {PlayerName} ({PrimaryId}) to {ShowOnDashboard}.",
-      player.Name,
-      player.PrimaryId,
-      showOnDashboard);
+      change.Player.Name,
+      change.Player.PrimaryId,
+      change.ShowOnDashboard);
 
-    await StatsApiStreamService.SetDashboardVisibilityAsync(player.PrimaryId, showOnDashboard);
-    _players = _players
-      .Select(currentPlayer => string.Equals(currentPlayer.PrimaryId, player.PrimaryId, StringComparison.OrdinalIgnoreCase)
-        ? currentPlayer with { ShowOnDashboard = showOnDashboard }
-        : currentPlayer)
-      .ToArray();
-    ToastService.Show(showOnDashboard ? "Player added to dashboard." : "Player removed from dashboard.");
+    await StatsApiStreamService.SetDashboardVisibilityAsync(change.Player.PrimaryId, change.ShowOnDashboard);
+    ToastService.Show(change.ShowOnDashboard ? "Player added to dashboard." : "Player removed from dashboard.");
+    await RefreshAsync();
+  }
+
+  private async Task HandleSetMeAsync(ObservedPlayer player)
+  {
+    Logger.LogInformation(
+      "Players page setting 'me' to {PlayerName} ({PrimaryId}).",
+      player.Name,
+      player.PrimaryId);
+
+    await StatsApiStreamService.SetMeAsync(player.PrimaryId);
+    ToastService.Show($"Set {player.Name} as you.");
     await RefreshAsync();
   }
 }

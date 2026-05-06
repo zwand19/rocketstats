@@ -16,7 +16,13 @@
 
 <section class="card">
   <div class="section-title">
-    <h2>Live match</h2>
+    <h2>
+      @if (_liveMatch is not null)
+      {
+        <span class="live-dot" title="Receiving live data"></span>
+      }
+      Live match
+    </h2>
     <span class="muted">@(_liveMatch?.UpdatedAt.LocalDateTime.ToString("T") ?? "No match state yet")</span>
   </div>
 
@@ -28,14 +34,9 @@
   {
     <div class="rank-list">
       <div class="rank-row">
-        <span>Match</span>
-        <strong>@(_liveMatch.MatchGuid ?? "Local or unknown")</strong>
-        <span>@_liveMatch.Arena</span>
-      </div>
-      <div class="rank-row">
-        <span>Clock</span>
         <strong>@TimeSpan.FromSeconds(_liveMatch.TimeSeconds).ToString("m\\:ss")</strong>
-        <span>@(_liveMatch.IsOvertime ? "Overtime" : "Regulation")</span>
+        <span>@(_liveMatch.IsOvertime ? "Overtime" : "Regulation") · @ArenaNames.GetDisplayName(_liveMatch.Arena)</span>
+        <span class="muted live-match-guid">@(_liveMatch.MatchGuid ?? "Local")</span>
       </div>
     </div>
 
@@ -54,8 +55,16 @@
             @foreach (var player in team.Players)
             {
               <article class="live-player-card @TeamClass(team.TeamNum)">
-                <div>
+                <div class="live-player-card-top">
                   <strong>@player.Name</strong>
+                  @if (IsOpponent(player) && TryGetHeadToHead(player.PrimaryId, out var record))
+                  {
+                    <div class="head-to-head">
+                      <span class="muted">Lifetime</span>
+                      <strong class="record-text">@record.Wins-@record.Losses</strong>
+                      <span class="muted">(@record.GamesPlayed @(record.GamesPlayed == 1 ? "game" : "games"))</span>
+                    </div>
+                  }
                 </div>
                 <div class="mini-stats">
                   <span>@player.Score pts</span>
@@ -65,26 +74,42 @@
                   <span>@player.Shots shots</span>
                   <span>@player.Boost boost</span>
                 </div>
-                @if (IsOpponent(player) && TryGetHeadToHead(player.PrimaryId, out var record))
-                {
-                  <div class="head-to-head">
-                    <span class="muted">Lifetime vs @player.Name:</span>
-                    <strong class="record-text">@record.Wins-@record.Losses</strong>
-                    <span class="muted">(@record.GamesPlayed @(record.GamesPlayed == 1 ? "game" : "games"))</span>
-                  </div>
-                }
               </article>
             }
           </div>
         }
       </div>
 
-      @if (_teamRecord is not null)
+      @if (_rematch is not null && _rematch.AllTimeGames > 0)
       {
-        <div class="team-record">
-          <span class="muted">Team record vs this lineup (@FormatGameMode(_teamRecord.GameMode)):</span>
-          <strong class="record-text">@_teamRecord.Wins-@_teamRecord.Losses</strong>
-          <span class="muted">over @(_teamRecord.Wins + _teamRecord.Losses) past matches</span>
+        <div class="rematch-card">
+          <div class="rematch-title">
+            <strong>Rematch vs this lineup</strong>
+            <span class="muted">@FormatGameMode(_rematch.GameMode)</span>
+          </div>
+          <div class="rematch-rows">
+            <div class="rematch-row">
+              <span class="muted">All time</span>
+              <strong class="record-text">@_rematch.AllTimeWins-@_rematch.AllTimeLosses</strong>
+              <span class="muted">@_rematch.AllTimeGames @(_rematch.AllTimeGames == 1 ? "game" : "games")</span>
+            </div>
+            @if (ShowSessionRematchRow())
+            {
+              <div class="rematch-row">
+                <span class="muted">This session</span>
+                <strong class="record-text">@_rematch.SessionWins-@_rematch.SessionLosses</strong>
+                <span class="muted">@_rematch.SessionGames @(_rematch.SessionGames == 1 ? "game" : "games")</span>
+              </div>
+            }
+            @if (_rematch.StreakGames > 0)
+            {
+              <div class="rematch-row">
+                <span class="muted">Streak</span>
+                <strong class="record-text">@_rematch.StreakWins-@_rematch.StreakLosses</strong>
+                <span class="muted">last @_rematch.StreakGames consecutive @(_rematch.StreakGames == 1 ? "game" : "games")</span>
+              </div>
+            }
+          </div>
         </div>
       }
     }
@@ -97,7 +122,12 @@
     <div class="section-title">
       <h2>Current session</h2>
       <span class="muted">
-        Started @_currentSession.StartedAt.LocalDateTime.ToString("g") · @_currentSession.MatchGuids.Count @(_currentSession.MatchGuids.Count == 1 ? "game" : "games")
+        Started @_currentSession.StartedAt.LocalDateTime.ToString("g") · @FormatGameMode(_currentSession.GameMode) · @_currentSession.MatchGuids.Count @(_currentSession.MatchGuids.Count == 1 ? "game" : "games")
+        @if (_meStreak is not null)
+        {
+          <text> · Streak: </text>
+          <span class="chip @(_meStreak.IsWinning ? "chip-up" : "chip-down")">@_meStreak.Display</span>
+        }
       </span>
     </div>
 
@@ -112,6 +142,7 @@
           <span>Player</span>
           <span title="Games played">GP</span>
           <span title="Wins-Losses">W-L</span>
+          <span title="MVP percentage (most points in match)">MVP %</span>
           <span>Score/g</span>
           <span>Goals/g</span>
           <span>Assists/g</span>
@@ -119,12 +150,15 @@
           <span>Shots/g</span>
           <span>Touches/g</span>
           <span>Demos/g</span>
+          <span title="Times demoed per game">Demoed/g</span>
+          <span title="Average speed (km/h, while in car)">Speed</span>
+          <span title="Percent of time at supersonic">SS %</span>
           <span>Boost avg</span>
         </div>
 
         @foreach (var session in _sessionAverages)
         {
-          var allTime = _averages.FirstOrDefault(entry =>
+          var allTime = _careerForSessionCompare.FirstOrDefault(entry =>
             string.Equals(entry.PrimaryId, session.PrimaryId, StringComparison.OrdinalIgnoreCase));
 
           <div class="averages-row">
@@ -133,6 +167,7 @@
             </div>
             <span>@session.GamesPlayed</span>
             <span>@session.Wins-@session.Losses</span>
+            @RenderSessionStat(session.MvpPercent, allTime?.MvpPercent, "0", "%")
             @RenderSessionStat(session.Score, allTime?.Score, "0.0")
             @RenderSessionStat(session.Goals, allTime?.Goals, "0.00")
             @RenderSessionStat(session.Assists, allTime?.Assists, "0.00")
@@ -140,6 +175,9 @@
             @RenderSessionStat(session.Shots, allTime?.Shots, "0.00")
             @RenderSessionStat(session.Touches, allTime?.Touches, "0.0")
             @RenderSessionStat(session.Demos, allTime?.Demos, "0.00")
+            @RenderNullableSessionStat(session.Demoed, allTime?.Demoed, "0.00")
+            @RenderNullableSessionStat(session.AverageSpeedKph, allTime?.AverageSpeedKph, "0")
+            @RenderNullableSessionStat(session.SupersonicPercent, allTime?.SupersonicPercent, "0", "%")
             @RenderSessionStat(session.Boost, allTime?.Boost, "0.0")
           </div>
         }
@@ -151,7 +189,20 @@
 <section class="card">
   <div class="section-title">
     <h2>Stats</h2>
-    <span class="muted">@_dashboardPlayers.Count tracked · averages over @TotalGames games</span>
+    <span class="muted">
+      @_dashboardPlayers.Count @(_dashboardPlayers.Count == 1 ? "player" : "players") tracked · @ModeChipLabel(_selectedGameMode)
+    </span>
+  </div>
+
+  <div class="mode-chips">
+    @foreach (var option in ModeChipOptions)
+    {
+      <button type="button"
+              class="chip mode-chip @(option.Mode == _selectedGameMode ? "chip-selected" : null)"
+              @onclick="() => SelectGameModeAsync(option.Mode)">
+        @option.Label
+      </button>
+    }
   </div>
 
   @if (_dashboardPlayers.Count == 0)
@@ -160,9 +211,9 @@
       No players are tracked yet. Open <NavLink href="players">Players</NavLink> and Track someone to see their averages here.
     </p>
   }
-  else if (_averages.Count == 0)
+  else if (_careerForCard.Count == 0)
   {
-    <p class="muted">No completed matches yet for tracked players. Averages appear after a match ends.</p>
+    <p class="muted">No completed matches yet for tracked players in @ModeChipLabel(_selectedGameMode). Averages appear after a match ends.</p>
   }
   else
   {
@@ -170,6 +221,7 @@
       <div class="averages-row averages-row-header">
         <span>Player</span>
         <span title="Games played">GP</span>
+        <span title="MVP percentage (most points in match)">MVP %</span>
         <span>Score/g</span>
         <span>Goals/g</span>
         <span>Assists/g</span>
@@ -177,12 +229,15 @@
         <span>Shots/g</span>
         <span>Touches/g</span>
         <span>Demos/g</span>
+        <span title="Times demoed per game">Demoed/g</span>
+        <span title="Average speed (km/h, while in car)">Speed</span>
+        <span title="Percent of time at supersonic">SS %</span>
         <span>Boost avg</span>
       </div>
 
       @foreach (var player in _dashboardPlayers)
       {
-        var averages = _averages.FirstOrDefault(entry =>
+        var averages = _careerForCard.FirstOrDefault(entry =>
           string.Equals(entry.PrimaryId, player.PrimaryId, StringComparison.OrdinalIgnoreCase));
 
         <div class="averages-row">
@@ -200,11 +255,16 @@
             <span class="muted">—</span>
             <span class="muted">—</span>
             <span class="muted">—</span>
+            <span class="muted">—</span>
+            <span class="muted">—</span>
+            <span class="muted">—</span>
+            <span class="muted">—</span>
             <span class="muted">No matches yet</span>
           }
           else
           {
             <span>@averages.GamesPlayed</span>
+            <span>@averages.MvpPercent.ToString("0")%</span>
             <span>@averages.Score.ToString("0.0")</span>
             <span>@averages.Goals.ToString("0.00")</span>
             <span>@averages.Assists.ToString("0.00")</span>
@@ -212,6 +272,9 @@
             <span>@averages.Shots.ToString("0.00")</span>
             <span>@averages.Touches.ToString("0.0")</span>
             <span>@averages.Demos.ToString("0.00")</span>
+            <span>@FormatNullable(averages.Demoed, "0.00")</span>
+            <span>@FormatNullable(averages.AverageSpeedKph, "0")</span>
+            <span>@FormatNullable(averages.SupersonicPercent, "0", "%")</span>
             <span>@averages.Boost.ToString("0.0")</span>
           }
         </div>
@@ -223,17 +286,28 @@
 @code {
   private readonly PeriodicTimer _refreshTimer = new(TimeSpan.FromSeconds(2));
 
+  private static readonly (int? Mode, string Label)[] ModeChipOptions =
+  {
+    (null, "Total"),
+    (6, "3v3"),
+    (4, "2v2"),
+    (2, "1v1")
+  };
+
   private IReadOnlyList<ObservedPlayer> _dashboardPlayers = [];
-  private IReadOnlyList<PlayerAverages> _averages = [];
+  private IReadOnlyList<PlayerAverages> _careerForCard = [];
+  private IReadOnlyList<PlayerAverages> _careerForSessionCompare = [];
   private IReadOnlyList<SessionAverages> _sessionAverages = [];
   private LiveMatchState? _liveMatch;
   private MatchSession? _currentSession;
-  private TeamHeadToHeadRecord? _teamRecord;
+  private PlayerStreak? _meStreak;
+  private TeamRematchSummary? _rematch;
   private Dictionary<string, HeadToHeadRecord> _headToHead = new(StringComparer.OrdinalIgnoreCase);
   private HashSet<string> _myTeamIds = new(StringComparer.OrdinalIgnoreCase);
   private int _myTeamNum = -1;
-
-  private int TotalGames => _averages.Count == 0 ? 0 : _averages.Max(entry => entry.GamesPlayed);
+  private int? _selectedGameMode;
+  private int? _lastDetectedMode;
+  private bool _userChoseMode;
 
   protected override async Task OnInitializedAsync()
   {
@@ -278,20 +352,73 @@
     _dashboardPlayers = await StatsApiStreamService.GetDashboardPlayersAsync();
     _liveMatch = await StatsApiStreamService.GetLiveMatchStateAsync();
     var trackedIds = _dashboardPlayers.Select(player => player.PrimaryId).ToArray();
-    _averages = await StatsApiStreamService.GetPlayerAveragesAsync(trackedIds);
     _currentSession = await StatsApiStreamService.GetCurrentSessionAsync();
+
+    int? detectedMode = _liveMatch is not null && _liveMatch.Players.Count > 0
+      ? _liveMatch.Players.Count
+      : _currentSession?.GameMode;
+
+    if (detectedMode != _lastDetectedMode)
+    {
+      _lastDetectedMode = detectedMode;
+
+      if (!_userChoseMode && detectedMode is not null && IsKnownChipMode(detectedMode.Value))
+      {
+        _selectedGameMode = detectedMode;
+      }
+    }
+
+    _careerForCard = await StatsApiStreamService.GetPlayerAveragesAsync(trackedIds, _selectedGameMode);
+    _careerForSessionCompare = _currentSession is null
+      ? []
+      : await StatsApiStreamService.GetPlayerAveragesAsync(trackedIds, _currentSession.GameMode);
 
     _sessionAverages = _currentSession is null
       ? []
       : await StatsApiStreamService.GetCurrentSessionAveragesAsync(trackedIds);
 
+    var allObserved = await StatsApiStreamService.GetObservedPlayersAsync();
+    var me = allObserved.FirstOrDefault(player => player.IsMe);
+    _meStreak = me is null
+      ? null
+      : await StatsApiStreamService.GetCurrentStreakAsync(me.PrimaryId);
+
     await RefreshLiveMatchRecordsAsync();
+  }
+
+  private async Task SelectGameModeAsync(int? gameMode)
+  {
+    if (_selectedGameMode == gameMode)
+    {
+      return;
+    }
+
+    _selectedGameMode = gameMode;
+    _userChoseMode = true;
+    await RefreshAsync();
+  }
+
+  private static bool IsKnownChipMode(int mode) =>
+    ModeChipOptions.Any(option => option.Mode == mode);
+
+  private static string ModeChipLabel(int? mode) =>
+    ModeChipOptions.FirstOrDefault(option => option.Mode == mode).Label ?? "Total";
+
+  private bool ShowSessionRematchRow()
+  {
+    if (_rematch is null || _rematch.SessionGames == 0)
+    {
+      return false;
+    }
+
+    return _rematch.SessionWins != _rematch.StreakWins ||
+      _rematch.SessionLosses != _rematch.StreakLosses;
   }
 
   private async Task RefreshLiveMatchRecordsAsync()
   {
     _headToHead = new(StringComparer.OrdinalIgnoreCase);
-    _teamRecord = null;
+    _rematch = null;
     _myTeamIds = new(StringComparer.OrdinalIgnoreCase);
     _myTeamNum = -1;
 
@@ -338,7 +465,7 @@
     }
 
     var gameMode = _liveMatch.Players.Count;
-    _teamRecord = await StatsApiStreamService.GetTeamHeadToHeadAsync(
+    _rematch = await StatsApiStreamService.GetTeamRematchSummaryAsync(
       _myTeamIds.ToArray(),
       opponentIds,
       gameMode);
@@ -376,16 +503,16 @@
   private static string FormatGameMode(int playerCount) =>
     playerCount > 0 && playerCount % 2 == 0
       ? $"{playerCount / 2}v{playerCount / 2}"
-      : $"{playerCount} players";
+      : playerCount == 0 ? "Unknown" : $"{playerCount} players";
 
-  private static RenderFragment RenderSessionStat(double sessionValue, double? allTimeValue, string format) =>
+  private static RenderFragment RenderSessionStat(double sessionValue, double? allTimeValue, string format, string suffix = "") =>
     builder =>
     {
       builder.OpenElement(0, "span");
       builder.AddAttribute(1, "class", "session-stat");
 
       builder.OpenElement(2, "span");
-      builder.AddContent(3, sessionValue.ToString(format));
+      builder.AddContent(3, sessionValue.ToString(format) + suffix);
       builder.CloseElement();
 
       if (allTimeValue is not null)
@@ -397,14 +524,14 @@
         {
           builder.OpenElement(4, "span");
           builder.AddAttribute(5, "class", "chip chip-up");
-          builder.AddContent(6, "+" + diff.ToString(format));
+          builder.AddContent(6, "+" + diff.ToString(format) + suffix);
           builder.CloseElement();
         }
         else if (diff < -threshold)
         {
           builder.OpenElement(7, "span");
           builder.AddAttribute(8, "class", "chip chip-down");
-          builder.AddContent(9, diff.ToString(format));
+          builder.AddContent(9, diff.ToString(format) + suffix);
           builder.CloseElement();
         }
       }
@@ -417,6 +544,24 @@
     var dotIndex = format.IndexOf('.');
     return dotIndex < 0 ? 0 : format.Length - dotIndex - 1;
   }
+
+  private static RenderFragment RenderNullableSessionStat(
+    double? sessionValue,
+    double? allTimeValue,
+    string format,
+    string suffix = "") =>
+    sessionValue is null
+      ? builder =>
+        {
+          builder.OpenElement(0, "span");
+          builder.AddAttribute(1, "class", "muted");
+          builder.AddContent(2, "—");
+          builder.CloseElement();
+        }
+      : RenderSessionStat(sessionValue.Value, allTimeValue, format, suffix);
+
+  private static string FormatNullable(double? value, string format, string suffix = "") =>
+    value is null ? "—" : value.Value.ToString(format) + suffix;
 
   private sealed record TeamGroup(int TeamNum, IReadOnlyList<LivePlayerStats> Players);
 }

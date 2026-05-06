@@ -19,6 +19,7 @@ public static class DependencyInjection
     services.AddSingleton<ILocalStorageService, JsonLocalStorageService>();
     services.AddSingleton<IAppendOnlyStorageService, JsonLinesStorageService>();
     services.AddSingleton<IStatsApiStreamService, StatsApiStreamService>();
+    services.AddSingleton<IRocketLeagueConfigService, RocketLeagueConfigService>();
     services.AddSingleton<IToastService, ToastService>();
 
     return services;
