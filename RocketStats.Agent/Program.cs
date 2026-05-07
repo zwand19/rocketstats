@@ -9,6 +9,10 @@ using RocketStats.Agent.Options;
 using RocketStats.Agent.Workers;
 using RocketStats.Application.Abstractions;
 using RocketStats.Infrastructure;
+using Velopack;
+using Velopack.Sources;
+
+VelopackApp.Build().Run();
 
 if (TryHandleCliCommand(args, out var exitCode))
 {
@@ -33,7 +37,15 @@ builder.Services.AddHttpClient<IngestClient>(client =>
 builder.Services.AddHostedService<ListenerWorker>();
 builder.Services.AddHostedService<BatchSenderWorker>();
 
-await builder.Build().RunAsync();
+var host = builder.Build();
+
+var updateUrl = builder.Configuration["Agent:UpdateUrl"];
+if (!string.IsNullOrWhiteSpace(updateUrl))
+{
+  await CheckForUpdatesAsync(updateUrl);
+}
+
+await host.RunAsync();
 return 0;
 
 static bool TryHandleCliCommand(string[] args, out int exitCode)
@@ -96,6 +108,26 @@ static bool TryHandleCliCommand(string[] args, out int exitCode)
   }
 
   return false;
+}
+
+static async Task CheckForUpdatesAsync(string updateUrl)
+{
+  try
+  {
+    var mgr = new UpdateManager(new GithubSource(updateUrl, null, false));
+    var newVersion = await mgr.CheckForUpdatesAsync();
+    if (newVersion == null)
+    {
+      return;
+    }
+
+    await mgr.DownloadUpdatesAsync(newVersion);
+    mgr.ApplyUpdatesAndRestart(newVersion);
+  }
+  catch
+  {
+    // update failures should never prevent the agent from starting
+  }
 }
 
 static void PrintHelp()
