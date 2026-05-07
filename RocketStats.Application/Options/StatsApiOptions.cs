@@ -6,7 +6,5 @@ public sealed class StatsApiOptions
 
   public string WebSocketUrl { get; set; } = "ws://localhost:49123";
 
-  public int StoredEventLimit { get; set; } = 5000;
-
-  public int StoredMatchLimit { get; set; } = 500;
+  public int ReconnectDelaySeconds { get; set; } = 5;
 }

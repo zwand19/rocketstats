@@ -7,7 +7,6 @@ namespace RocketStats.Infrastructure.Services;
 
 public sealed class RocketLeagueConfigService : IRocketLeagueConfigService
 {
-  private const string SavedPathKey = "rocket-league-stats-api-ini-path";
   private const string ConfigSubPath = @"TAGame\Config\DefaultStatsAPI.ini";
 
   private static readonly string[] CandidateRoots =
@@ -20,29 +19,11 @@ public sealed class RocketLeagueConfigService : IRocketLeagueConfigService
     @"E:\Steam\steamapps\common\rocketleague"
   ];
 
-  private readonly ILocalStorageService _localStorage;
   private readonly ILogger<RocketLeagueConfigService> _logger;
 
-  public RocketLeagueConfigService(
-    ILocalStorageService localStorage,
-    ILogger<RocketLeagueConfigService> logger)
+  public RocketLeagueConfigService(ILogger<RocketLeagueConfigService> logger)
   {
-    _localStorage = localStorage;
     _logger = logger;
-  }
-
-  public async Task<string?> GetSavedPathAsync(CancellationToken cancellationToken = default) =>
-    await _localStorage.ReadAsync<string>(SavedPathKey, cancellationToken);
-
-  public async Task SetSavedPathAsync(string? path, CancellationToken cancellationToken = default)
-  {
-    if (string.IsNullOrWhiteSpace(path))
-    {
-      await _localStorage.RemoveAsync(SavedPathKey, cancellationToken);
-      return;
-    }
-
-    await _localStorage.WriteAsync(SavedPathKey, path, cancellationToken);
   }
 
   public IReadOnlyList<string> GetCandidatePaths() =>
@@ -50,19 +31,6 @@ public sealed class RocketLeagueConfigService : IRocketLeagueConfigService
       .Select(root => Path.Combine(root, ConfigSubPath))
       .Where(File.Exists)
       .ToArray();
-
-  public async Task<RocketLeagueStatsApiConfig?> ReadAsync(CancellationToken cancellationToken = default)
-  {
-    var saved = await GetSavedPathAsync(cancellationToken);
-
-    if (!string.IsNullOrWhiteSpace(saved))
-    {
-      return await ReadAsync(saved, cancellationToken);
-    }
-
-    var candidate = GetCandidatePaths().FirstOrDefault();
-    return candidate is null ? null : await ReadAsync(candidate, cancellationToken);
-  }
 
   public async Task<RocketLeagueStatsApiConfig?> ReadAsync(string path, CancellationToken cancellationToken = default)
   {

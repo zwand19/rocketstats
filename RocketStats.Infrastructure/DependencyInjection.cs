@@ -3,7 +3,6 @@ using Microsoft.Extensions.DependencyInjection;
 using RocketStats.Application.Abstractions;
 using RocketStats.Application.Options;
 using RocketStats.Infrastructure.Services;
-using RocketStats.Infrastructure.Storage;
 
 namespace RocketStats.Infrastructure;
 
@@ -16,11 +15,8 @@ public static class DependencyInjection
     services.Configure<StatsApiOptions>(
       configuration.GetSection(StatsApiOptions.SectionName));
 
-    services.AddSingleton<ILocalStorageService, JsonLocalStorageService>();
-    services.AddSingleton<IAppendOnlyStorageService, JsonLinesStorageService>();
-    services.AddSingleton<IStatsApiStreamService, StatsApiStreamService>();
+    services.AddSingleton<StatsApiListener>();
     services.AddSingleton<IRocketLeagueConfigService, RocketLeagueConfigService>();
-    services.AddSingleton<IToastService, ToastService>();
 
     return services;
   }
