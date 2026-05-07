@@ -9,14 +9,21 @@ using RocketStats.Agent.Options;
 using RocketStats.Agent.Workers;
 using RocketStats.Application.Abstractions;
 using RocketStats.Infrastructure;
+using Microsoft.Win32;
 using Velopack;
 using Velopack.Sources;
 
 static class Program
 {
+  const string StartupRegistryKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
+  const string StartupValueName = "RocketStatsAgent";
+
   static void Main(string[] args)
   {
-    VelopackApp.Build().Run();
+    VelopackApp.Build()
+      .OnAfterInstallFastCallback(_ => RegisterStartup())
+      .OnBeforeUninstallFastCallback(_ => UnregisterStartup())
+      .Run();
     RunAsync(args).GetAwaiter().GetResult();
   }
 
@@ -137,6 +144,19 @@ static class Program
     {
       // update failures should never prevent the agent from starting
     }
+  }
+
+  static void RegisterStartup()
+  {
+    var exePath = Environment.ProcessPath!;
+    using var key = Registry.CurrentUser.OpenSubKey(StartupRegistryKey, writable: true);
+    key?.SetValue(StartupValueName, $"\"{exePath}\"");
+  }
+
+  static void UnregisterStartup()
+  {
+    using var key = Registry.CurrentUser.OpenSubKey(StartupRegistryKey, writable: true);
+    key?.DeleteValue(StartupValueName, throwOnMissingValue: false);
   }
 
   static void PrintHelp()
