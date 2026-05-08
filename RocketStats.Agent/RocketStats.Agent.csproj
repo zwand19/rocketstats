@@ -4,6 +4,7 @@
     <TargetFramework>net8.0-windows</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <OutputType>WinExe</OutputType>
     <RootNamespace>RocketStats.Agent</RootNamespace>
     <UserSecretsId>rocketstats-agent</UserSecretsId>
     <RollForward>Major</RollForward>
@@ -13,6 +14,7 @@
     <PackageReference Include="Microsoft.Extensions.Hosting" Version="8.0.1" />
     <PackageReference Include="Microsoft.Extensions.Http" Version="8.0.1" />
     <PackageReference Include="Microsoft.Extensions.Logging.Console" Version="8.0.1" />
+    <PackageReference Include="Microsoft.Extensions.Logging.EventLog" Version="8.0.1" />
     <PackageReference Include="Velopack" Version="0.0.1298" />
   </ItemGroup>
 

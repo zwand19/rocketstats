@@ -36,6 +36,7 @@ static class Program
 
     var builder = Host.CreateApplicationBuilder(args);
 
+    builder.Logging.AddEventLog(settings => settings.SourceName = "Application");
     builder.Configuration.AddEnvironmentVariables(prefix: "ROCKETSTATS_");
 
     builder.Services.AddRocketStatsInfrastructure(builder.Configuration);
