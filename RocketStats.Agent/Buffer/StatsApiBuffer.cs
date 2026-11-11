@@ -6,12 +6,16 @@ namespace RocketStats.Agent.Buffer;
 
 public sealed class StatsApiBuffer : IStatsRecorder
 {
+  // The event log is diagnostic only. Capping it keeps the batch a predictable size no matter
+  // how long the server is unreachable; older entries are discarded first.
+  public const int MaxBufferedEvents = 500;
+
   private readonly object _lock = new();
   private readonly Dictionary<string, ObservedPlayerInput> _observedPlayers =
     new(StringComparer.OrdinalIgnoreCase);
   private readonly Dictionary<(string MatchGuid, string PrimaryId), PlayerMatchResultInput> _playerMatchResults =
     new();
-  private readonly Dictionary<string, EventLogEntryInput> _events = new();
+  private readonly Queue<EventLogEntryInput> _events = new();
   private LiveMatchStateInput? _liveMatchState;
   private StatsApiConnectionState _connectionState = StatsApiConnectionState.Stopped;
   private string? _lastError;
@@ -87,7 +91,12 @@ public sealed class StatsApiBuffer : IStatsRecorder
 
     lock (_lock)
     {
-      _events[entry.Id] = input;
+      _events.Enqueue(input);
+
+      while (_events.Count > MaxBufferedEvents)
+      {
+        _events.Dequeue();
+      }
     }
   }
 
@@ -140,7 +149,7 @@ public sealed class StatsApiBuffer : IStatsRecorder
       var snapshot = new IngestSnapshot(
         _observedPlayers.Values.ToArray(),
         _playerMatchResults.Values.ToArray(),
-        _events.Values.ToArray(),
+        _events.ToArray(),
         _liveMatchState,
         _connectionState,
         _lastError);
@@ -181,9 +190,14 @@ public sealed class StatsApiBuffer : IStatsRecorder
         _playerMatchResults.TryAdd((result.MatchGuid, result.PrimaryId), result);
       }
 
-      foreach (var entry in snapshot.Events)
+      // The snapshot is older than anything recorded since, so it goes back in front and
+      // is the first to be discarded once the cap is reached.
+      var newer = _events.ToArray();
+      _events.Clear();
+
+      foreach (var entry in snapshot.Events.Concat(newer).TakeLast(MaxBufferedEvents))
       {
-        _events.TryAdd(entry.Id, entry);
+        _events.Enqueue(entry);
       }
 
       _liveMatchState ??= snapshot.LiveMatchState;

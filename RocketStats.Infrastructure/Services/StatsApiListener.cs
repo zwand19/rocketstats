@@ -2,6 +2,7 @@ using System.Net.Sockets;
 using System.Runtime.CompilerServices;
 using System.Text;
 using System.Text.Json;
+using System.Threading.Channels;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using RocketStats.Application.Abstractions;
@@ -14,6 +15,13 @@ public sealed class StatsApiListener : IAsyncDisposable
 {
   private const int RecentlyFlushedCapacity = 16;
 
+  // Rocket League writes to this socket from the game process. If we ever stop reading,
+  // the game's send buffer fills up and the game itself stutters, so the socket is drained
+  // by a dedicated pump into a bounded queue and never waits on message processing.
+  private const int MessageQueueCapacity = 1024;
+  private const int SocketReceiveBufferBytes = 1 << 20;
+  private const int MaxMessageChars = 4 * 1024 * 1024;
+
   private readonly Dictionary<string, MatchAggregate> _matchAggregates = new(StringComparer.OrdinalIgnoreCase);
   private readonly Dictionary<string, DateTimeOffset> _firstSeenAt = new(StringComparer.OrdinalIgnoreCase);
   private readonly HashSet<string> _recentlyFlushedSet = new(StringComparer.OrdinalIgnoreCase);
@@ -25,6 +33,7 @@ public sealed class StatsApiListener : IAsyncDisposable
   private CancellationTokenSource? _listenerCancellation;
   private Task? _listenerTask;
   private string? _activeMatchGuid;
+  private long _droppedMessages;
 
   public StatsApiListener(
     IStatsRecorder recorder,
@@ -106,18 +115,35 @@ public sealed class StatsApiListener : IAsyncDisposable
       try
       {
         var endpoint = GetEndpoint(_options.WebSocketUrl);
-        using var client = new TcpClient();
+        using var client = new TcpClient { ReceiveBufferSize = SocketReceiveBufferBytes };
         await client.ConnectAsync(endpoint.Host, endpoint.Port, cancellationToken);
         ConnectionState = StatsApiConnectionState.Connected;
         _recorder.RecordConnectionState(ConnectionState, LastError);
         _logger.LogInformation("Stats API listener connected to {Endpoint}.", _options.WebSocketUrl);
 
-        await foreach (var message in ReceiveMessagesAsync(client.GetStream(), cancellationToken))
-        {
-          if (!string.IsNullOrWhiteSpace(message))
+        var queue = Channel.CreateBounded<string>(
+          new BoundedChannelOptions(MessageQueueCapacity)
           {
-            await HandleMessageAsync(message, cancellationToken);
+            FullMode = BoundedChannelFullMode.DropOldest,
+            SingleReader = true,
+            SingleWriter = true,
+          },
+          _ => OnMessageDropped());
+
+        var pump = PumpSocketAsync(client.GetStream(), queue.Writer, cancellationToken);
+
+        try
+        {
+          await foreach (var message in queue.Reader.ReadAllAsync(cancellationToken))
+          {
+            HandleMessage(message);
           }
+        }
+        finally
+        {
+          // Closing the socket unblocks the pump if we are leaving because processing failed.
+          client.Close();
+          await pump;
         }
       }
       catch (OperationCanceledException)
@@ -154,6 +180,39 @@ public sealed class StatsApiListener : IAsyncDisposable
     }
   }
 
+  private static async Task PumpSocketAsync(
+    NetworkStream stream,
+    ChannelWriter<string> writer,
+    CancellationToken cancellationToken)
+  {
+    try
+    {
+      await foreach (var message in ReceiveMessagesAsync(stream, cancellationToken).ConfigureAwait(false))
+      {
+        writer.TryWrite(message);
+      }
+
+      writer.TryComplete();
+    }
+    catch (Exception exception)
+    {
+      // Surfaces on the consuming side once the queued messages have been processed.
+      writer.TryComplete(exception);
+    }
+  }
+
+  private void OnMessageDropped()
+  {
+    var dropped = Interlocked.Increment(ref _droppedMessages);
+
+    if (dropped == 1 || dropped % 10_000 == 0)
+    {
+      _logger.LogWarning(
+        "Stats API messages are arriving faster than they can be processed; {Dropped} dropped so far.",
+        dropped);
+    }
+  }
+
   private static (string Host, int Port) GetEndpoint(string endpoint)
   {
     var uri = new Uri(endpoint);
@@ -164,7 +223,10 @@ public sealed class StatsApiListener : IAsyncDisposable
     NetworkStream stream,
     [EnumeratorCancellation] CancellationToken cancellationToken)
   {
-    var buffer = new byte[8192];
+    var buffer = new byte[64 * 1024];
+    var chars = new char[Encoding.UTF8.GetMaxCharCount(buffer.Length)];
+    // A stateful decoder keeps multi-byte characters intact when they straddle two reads.
+    var decoder = Encoding.UTF8.GetDecoder();
     var builder = new StringBuilder();
     var depth = 0;
     var hasStarted = false;
@@ -173,17 +235,19 @@ public sealed class StatsApiListener : IAsyncDisposable
 
     while (!cancellationToken.IsCancellationRequested)
     {
-      var count = await stream.ReadAsync(buffer, cancellationToken);
+      var count = await stream.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
 
       if (count == 0)
       {
         yield break;
       }
 
-      var text = Encoding.UTF8.GetString(buffer, 0, count);
+      var charCount = decoder.GetChars(buffer, 0, count, chars, 0);
 
-      foreach (var character in text)
+      for (var index = 0; index < charCount; index++)
       {
+        var character = chars[index];
+
         if (!hasStarted)
         {
           if (char.IsWhiteSpace(character))
@@ -200,6 +264,17 @@ public sealed class StatsApiListener : IAsyncDisposable
         }
 
         builder.Append(character);
+
+        if (builder.Length > MaxMessageChars)
+        {
+          // Framing has gone wrong (or this is not the Stats API); resynchronise on the next object.
+          builder.Clear();
+          depth = 0;
+          hasStarted = false;
+          inString = false;
+          isEscaped = false;
+          continue;
+        }
 
         if (isEscaped)
         {
@@ -243,7 +318,20 @@ public sealed class StatsApiListener : IAsyncDisposable
     }
   }
 
-  private Task HandleMessageAsync(string rawJson, CancellationToken cancellationToken)
+  private void HandleMessage(string rawJson)
+  {
+    try
+    {
+      ProcessMessage(rawJson);
+    }
+    catch (JsonException exception)
+    {
+      // One malformed message should not tear down the connection.
+      _logger.LogDebug(exception, "Ignoring malformed Stats API message.");
+    }
+  }
+
+  private void ProcessMessage(string rawJson)
   {
     using var document = JsonDocument.Parse(rawJson);
     var root = document.RootElement;
@@ -255,7 +343,7 @@ public sealed class StatsApiListener : IAsyncDisposable
     if (string.Equals(eventName, "UpdateState", StringComparison.OrdinalIgnoreCase))
     {
       HandleUpdateState(data);
-      return Task.CompletedTask;
+      return;
     }
 
     if (string.Equals(eventName, "MatchEnded", StringComparison.OrdinalIgnoreCase))
@@ -273,8 +361,6 @@ public sealed class StatsApiListener : IAsyncDisposable
       matchGuid,
       DateTimeOffset.UtcNow,
       rawJson));
-
-    return Task.CompletedTask;
   }
 
   private static JsonElement GetData(JsonElement root, out JsonDocument? dataDocument)

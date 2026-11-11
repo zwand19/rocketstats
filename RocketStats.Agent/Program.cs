@@ -18,13 +18,13 @@ static class Program
   const string StartupRegistryKey = @"Software\Microsoft\Windows\CurrentVersion\Run";
   const string StartupValueName = "RocketStatsAgent";
 
-  static void Main(string[] args)
+  static int Main(string[] args)
   {
     VelopackApp.Build()
       .OnAfterInstallFastCallback(_ => RegisterStartup())
       .OnBeforeUninstallFastCallback(_ => UnregisterStartup())
       .Run();
-    RunAsync(args).GetAwaiter().GetResult();
+    return RunAsync(args).GetAwaiter().GetResult();
   }
 
   static async Task<int> RunAsync(string[] args)
