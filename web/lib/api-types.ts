@@ -162,6 +162,7 @@ export type EventLogEntryView = {
 
 export type ConnectionPayload = {
   state: string;
+  agentOnline: boolean;
   lastError: string | null;
   lastIngestAt: string | null;
   observedPlayerCount: number;

@@ -1,6 +1,7 @@
 import { sql, desc } from "drizzle-orm";
+import { AGENT_OFFLINE_MS } from "../options";
 import { db } from "@/db/client";
-import { agentHeartbeat, eventLog, observedPlayers } from "@/db/schema";
+import { agentHeartbeat, eventLog } from "@/db/schema";
 import type { ConnectionPayload } from "../api-types";
 
 export async function getConnection(): Promise<ConnectionPayload> {
@@ -28,11 +29,15 @@ export async function getConnection(): Promise<ConnectionPayload> {
     SELECT updated_at FROM live_match_state WHERE id = 1
   `);
 
-  void observedPlayers;
+  // The heartbeat row keeps its last value when the agent exits, so a stale one means
+  // the agent is not running rather than whatever state it last reported.
+  const agentOnline =
+    hbRow != null && Date.now() - hbRow.lastIngestAt.getTime() <= AGENT_OFFLINE_MS;
 
   return {
-    state: hbRow?.connectionState ?? "Stopped",
-    lastError: hbRow?.lastError ?? null,
+    state: agentOnline ? hbRow.connectionState : "Offline",
+    agentOnline,
+    lastError: agentOnline ? hbRow.lastError ?? null : null,
     lastIngestAt: hbRow ? hbRow.lastIngestAt.toISOString() : null,
     observedPlayerCount: observedCount.rows[0]?.count ?? 0,
     dashboardPlayerCount: dashCount.rows[0]?.count ?? 0,

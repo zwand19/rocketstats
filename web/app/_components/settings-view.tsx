@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { usePoll } from "@/lib/use-poll";
 import type { ObservedPlayerView } from "@/lib/api-types";
 
@@ -11,11 +11,15 @@ export function SettingsView() {
 
   const me = useMemo(() => (players ?? []).find((p) => p.isMe) ?? null, [players]);
 
+  // Pre-fill the dropdown once. Doing it on every change would snap "None" straight back.
+  const prefilled = useRef(false);
+
   useEffect(() => {
-    if (selected === "" && me) {
+    if (!prefilled.current && me) {
+      prefilled.current = true;
       setSelected(me.primaryId);
     }
-  }, [me, selected]);
+  }, [me]);
 
   async function save() {
     const primaryId = selected.length === 0 ? null : selected;
@@ -25,16 +29,18 @@ export function SettingsView() {
       body: JSON.stringify({ primaryId }),
     });
     setSavedMessage(response.ok ? "Saved." : "Failed to save.");
+    prefilled.current = true;
   }
 
   async function clearMe() {
-    await fetch(`/api/settings/me`, {
+    const response = await fetch(`/api/settings/me`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ primaryId: null }),
     });
+    prefilled.current = true;
     setSelected("");
-    setSavedMessage("Cleared.");
+    setSavedMessage(response.ok ? "Cleared." : "Failed to clear.");
   }
 
   return (
@@ -53,7 +59,7 @@ export function SettingsView() {
           {me ? <span className="muted">Currently: {me.name}</span> : <span className="muted">No me set</span>}
         </div>
 
-        <div className="form-grid form-grid-me">
+        <div className="form-grid">
           <label>
             <span>Player</span>
             <select className="input" value={selected} onChange={(e) => setSelected(e.target.value)}>
@@ -82,10 +88,8 @@ export function SettingsView() {
           The Rocket League <code>DefaultStatsAPI.ini</code> file lives on the local machine, so it
           is now configured from the agent rather than the web UI.
         </p>
-        <p className="muted">
-          From the repo root, run:
-        </p>
-        <pre className="card" style={{ padding: 12, overflow: "auto" }}>
+        <p className="muted">From the repo root, run:</p>
+        <pre className="code-block">
 {`dotnet run --project RocketStats.Agent -- \\
   --write-rl-config \"<path to>\\DefaultStatsAPI.ini\" 60 49123`}
         </pre>

@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import { db } from "@/db/client";
+import { LIVE_STALE_MS } from "../options";
 import type {
   HeadToHeadRecord,
   LiveMatchStateView,
@@ -28,6 +29,11 @@ export async function getLiveMatchState(): Promise<LiveMatchStateView | null> {
 
   const row = result.rows[0];
   if (!row) {
+    return null;
+  }
+
+  // The row is never deleted, so without this a finished match would look live forever.
+  if (Date.now() - new Date(row.updated_at).getTime() > LIVE_STALE_MS) {
     return null;
   }
 

@@ -2,6 +2,7 @@
 
 import { usePoll } from "@/lib/use-poll";
 import { formatLocalTime } from "@/lib/format";
+import { TableSkeleton } from "./skeleton";
 import type { ConnectionPayload } from "@/lib/api-types";
 
 export function ConnectionView() {
@@ -22,7 +23,12 @@ export function ConnectionView() {
       </section>
 
       <section className="grid">
-        <SummaryCard title="Connection" value={data?.state ?? "—"} detail={liveDetail} />
+        <SummaryCard
+          title="Connection"
+          value={data?.state ?? "—"}
+          detail={data && !data.agentOnline ? "The agent has stopped reporting" : liveDetail}
+          tone={data == null ? undefined : !data.agentOnline ? "is-bad" : data.state === "Connected" ? "is-ok" : "is-warn"}
+        />
         <SummaryCard
           title="Observed Players"
           value={String(data?.observedPlayerCount ?? 0)}
@@ -48,17 +54,17 @@ export function ConnectionView() {
           <span className="muted">Latest 10</span>
         </div>
 
-        {(data?.events ?? []).length === 0 ? (
-          <p className="muted">No Stats API messages have been logged yet.</p>
+        {data == null ? (
+          <TableSkeleton rows={4} />
+        ) : data.events.length === 0 ? (
+          <p className="empty">No Stats API messages have been logged yet.</p>
         ) : (
           <div className="match-list">
-            {data!.events.map((entry) => (
+            {data.events.map((entry) => (
               <article key={entry.id} className="match-row">
-                <div>
-                  <strong>{entry.eventName}</strong>
-                  <span>{entry.matchGuid ?? "No match id"}</span>
-                </div>
-                <span>{formatLocalTime(entry.receivedAt)}</span>
+                <strong>{entry.eventName}</strong>
+                <span className="mono">{entry.matchGuid ?? "No match id"}</span>
+                <time dateTime={entry.receivedAt}>{formatLocalTime(entry.receivedAt)}</time>
               </article>
             ))}
           </div>
@@ -81,15 +87,20 @@ function SummaryCard({
   title,
   value,
   detail,
+  tone,
 }: {
   title: string;
   value: string;
   detail?: string;
+  tone?: string;
 }) {
   return (
     <article className="stat-card">
-      <span>{title}</span>
-      <strong>{value}</strong>
+      <span className="stat-label">{title}</span>
+      <strong>
+        {tone ? <span className={`status-dot ${tone}`} /> : null}
+        {value}
+      </strong>
       {detail ? <small>{detail}</small> : null}
     </article>
   );

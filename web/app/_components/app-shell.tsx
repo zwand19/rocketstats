@@ -3,6 +3,8 @@
 import { useState, useEffect } from "react";
 import { usePathname } from "next/navigation";
 import Link from "next/link";
+import { usePoll } from "@/lib/use-poll";
+import type { ConnectionPayload } from "@/lib/api-types";
 
 const NAV_ITEMS = [
   {
@@ -120,18 +122,64 @@ function NavItems({ onNavigate }: { onNavigate?: () => void }) {
   );
 }
 
+function AgentStatus({ onNavigate }: { onNavigate?: () => void }) {
+  const { data, error } = usePoll<ConnectionPayload>("/api/connection", 15000);
+
+  let tone = "";
+  let title = "Checking agent…";
+  let detail = "";
+
+  if (data) {
+    if (!data.agentOnline) {
+      tone = "is-bad";
+      title = "Agent offline";
+      detail = "No data is arriving";
+    } else if (data.state === "Connected") {
+      tone = "is-ok";
+      title = "Agent online";
+      detail = "Connected to Rocket League";
+    } else {
+      tone = "is-warn";
+      title = "Agent online";
+      detail = "Waiting for Rocket League";
+    }
+  } else if (error) {
+    tone = "is-bad";
+    title = "Server unreachable";
+  }
+
+  return (
+    <Link href="/connection" className="agent-status" title={title} onClick={onNavigate}>
+      <span className={`status-dot ${tone}`} />
+      <span className="agent-status-text">
+        <span>{title}</span>
+        {detail ? <small>{detail}</small> : null}
+      </span>
+    </Link>
+  );
+}
+
 export function AppShell({ children }: { children: React.ReactNode }) {
   const [collapsed, setCollapsed] = useState(false);
   const [drawerOpen, setDrawerOpen] = useState(false);
 
   useEffect(() => {
-    if (drawerOpen) {
-      document.body.style.overflow = "hidden";
-    } else {
-      document.body.style.overflow = "";
+    if (!drawerOpen) {
+      return;
     }
+
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setDrawerOpen(false);
+      }
+    }
+
+    document.body.style.overflow = "hidden";
+    document.addEventListener("keydown", onKeyDown);
+
     return () => {
       document.body.style.overflow = "";
+      document.removeEventListener("keydown", onKeyDown);
     };
   }, [drawerOpen]);
 
@@ -147,6 +195,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             className="sidebar-toggle"
             onClick={() => setCollapsed((c) => !c)}
             aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+            aria-expanded={!collapsed}
           >
             <ChevronIcon collapsed={collapsed} />
           </button>
@@ -154,6 +203,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         <nav>
           <NavItems />
         </nav>
+        <AgentStatus />
       </aside>
 
       <div className="content-wrapper">
@@ -193,6 +243,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <nav>
               <NavItems onNavigate={() => setDrawerOpen(false)} />
             </nav>
+            <AgentStatus onNavigate={() => setDrawerOpen(false)} />
           </aside>
         </>
       )}

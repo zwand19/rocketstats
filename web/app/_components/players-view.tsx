@@ -1,8 +1,9 @@
 "use client";
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { usePoll } from "@/lib/use-poll";
-import { formatLocalDate, formatNullable } from "@/lib/format";
+import { formatLocalDate, formatNullable, formatRelative, initial, platformLabel } from "@/lib/format";
+import { TableSkeleton } from "./skeleton";
 import type {
   ConnectionPayload,
   HeadToHeadRecord,
@@ -11,7 +12,7 @@ import type {
 } from "@/lib/api-types";
 
 export function PlayersView() {
-  const { data: players } = usePoll<ObservedPlayerView[]>("/api/players", 5000, []);
+  const { data: players } = usePoll<ObservedPlayerView[]>("/api/players", 5000);
   const { data: connection } = usePoll<ConnectionPayload>("/api/connection", 5000);
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState<ObservedPlayerView | null>(null);
@@ -27,6 +28,8 @@ export function PlayersView() {
   }, [players, search]);
 
   const meIsSet = (players ?? []).some((p) => p.isMe);
+
+  const closeSelected = useCallback(() => setSelected(null), []);
 
   const refreshSelected = useCallback(() => {
     setRefreshTick((t) => t + 1);
@@ -57,17 +60,18 @@ export function PlayersView() {
         <div className="section-title">
           <h2>Observed players</h2>
           <span className="muted">
-            {filtered.length} of {(players ?? []).length} · {connection?.state ?? "—"}
+            {filtered.length} of {(players ?? []).length}
           </span>
         </div>
 
-        {connection?.lastError ? <section className="alert">{connection.lastError}</section> : null}
+        {connection?.lastError ? <div className="alert">{connection.lastError}</div> : null}
 
         <div className="player-search">
           <input
             className="input"
             type="search"
             placeholder="Search by name…"
+            aria-label="Search players by name"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
           />
@@ -78,13 +82,15 @@ export function PlayersView() {
           ) : null}
         </div>
 
-        {(players ?? []).length === 0 ? (
-          <p className="muted">
+        {players == null ? (
+          <TableSkeleton rows={5} />
+        ) : players.length === 0 ? (
+          <p className="empty">
             No players have been observed yet. Enable the Stats API in Rocket League, then start a
             match or replay.
           </p>
         ) : filtered.length === 0 ? (
-          <p className="muted">No players match &quot;{search}&quot;.</p>
+          <p className="empty">No players match &quot;{search}&quot;.</p>
         ) : (
           <div className="player-table">
             <div className="player-row player-row-header">
@@ -99,10 +105,16 @@ export function PlayersView() {
                 className="player-row player-row-button"
                 onClick={() => setSelected(player)}
               >
-                <strong>
-                  {player.name}
-                  {player.isMe ? <span className="chip chip-me">Me</span> : null}
-                </strong>
+                <span className="player-cell">
+                  <span className="avatar" aria-hidden="true">{initial(player.name)}</span>
+                  <span className="player-cell-text">
+                    <strong className="player-name">
+                      <span>{player.name}</span>
+                      {player.isMe ? <span className="chip chip-me">Me</span> : null}
+                    </strong>
+                    {platformLabel(player.primaryId) ? <small>{platformLabel(player.primaryId)}</small> : null}
+                  </span>
+                </span>
                 <span>
                   {player.showOnDashboard ? (
                     <span className="chip chip-tracked">Tracked</span>
@@ -110,7 +122,9 @@ export function PlayersView() {
                     <span className="muted">—</span>
                   )}
                 </span>
-                <span>{formatLocalDate(player.lastSeenAt)}</span>
+                <span className="when" title={formatLocalDate(player.lastSeenAt)}>
+                  {formatRelative(player.lastSeenAt)}
+                </span>
               </button>
             ))}
           </div>
@@ -131,7 +145,7 @@ export function PlayersView() {
           player={selected}
           meIsSet={meIsSet}
           refreshTick={refreshTick}
-          onClose={() => setSelected(null)}
+          onClose={closeSelected}
           onToggleTrack={async () => {
             await patchPlayer(selected.primaryId, { showOnDashboard: !selected.showOnDashboard });
             setSelected({ ...selected, showOnDashboard: !selected.showOnDashboard });
@@ -169,15 +183,35 @@ function PlayerDetailsModal({
     10000,
   );
 
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        onClose();
+      }
+    }
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [onClose]);
+
   return (
     <div className="modal-overlay" onClick={onClose}>
-      <div className="modal-card" onClick={(e) => e.stopPropagation()}>
+      <div
+        className="modal-card"
+        role="dialog"
+        aria-modal="true"
+        aria-label={player.name}
+        onClick={(e) => e.stopPropagation()}
+      >
         <header className="modal-header">
           <div className="modal-title">
-            <h2>{player.name}</h2>
-            <div className="modal-chips">
-              {player.isMe ? <span className="chip chip-me">Me</span> : null}
-              {player.showOnDashboard ? <span className="chip chip-tracked">Tracked</span> : null}
+            <span className="avatar" aria-hidden="true">{initial(player.name)}</span>
+            <div>
+              <h2>{player.name}</h2>
+              <div className="modal-chips">
+                {player.isMe ? <span className="chip chip-me">Me</span> : null}
+                {player.showOnDashboard ? <span className="chip chip-tracked">Tracked</span> : null}
+                <span>Last seen {formatRelative(player.lastSeenAt)}</span>
+              </div>
             </div>
           </div>
           <button className="link-button" onClick={onClose}>
@@ -197,13 +231,12 @@ function PlayerDetailsModal({
               Set as me
             </button>
           ) : null}
-          <span className="muted modal-meta">Last seen {formatLocalDate(player.lastSeenAt)}</span>
         </div>
 
         {data == null ? (
-          <p className="muted">Loading…</p>
+          <TableSkeleton rows={2} />
         ) : data.averages == null ? (
-          <p className="muted">No completed matches recorded for this player yet.</p>
+          <p className="empty">No completed matches recorded for this player yet.</p>
         ) : (
           <section className="modal-section">
             <h3>Career averages</h3>
@@ -219,7 +252,7 @@ function PlayerDetailsModal({
               <div><span className="muted">Demos/g</span><strong>{data.averages.demos.toFixed(2)}</strong></div>
               <div><span className="muted">Demoed/g</span><strong>{formatNullable(data.averages.demoed, 2)}</strong></div>
               <div><span className="muted">Speed (km/h)</span><strong>{formatNullable(data.averages.averageSpeedKph, 0)}</strong></div>
-              <div><span className="muted">SS %</span><strong>{formatNullable(data.averages.supersonicPercent, 0, "%")}</strong></div>
+              <div><span className="muted">Sonic %</span><strong>{formatNullable(data.averages.supersonicPercent, 0, "%")}</strong></div>
               <div><span className="muted">Boost avg</span><strong>{data.averages.boost.toFixed(1)}</strong></div>
             </div>
           </section>

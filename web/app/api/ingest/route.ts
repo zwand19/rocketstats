@@ -65,7 +65,7 @@ export async function POST(request: Request) {
           matchGuid: r.matchGuid,
           primaryId: r.primaryId,
           name: r.name,
-          arena: r.arena,
+          arena: r.arena ?? null,
           endedAt: new Date(r.endedAt),
           score: r.score,
           goals: r.goals,
@@ -76,11 +76,11 @@ export async function POST(request: Request) {
           demos: r.demos,
           averageBoost: r.averageBoost,
           teamNum: r.teamNum,
-          winningTeam: r.winningTeam,
+          winningTeam: r.winningTeam ?? null,
           gameMode: r.gameMode,
-          averageSpeedKph: r.averageSpeedKph,
-          supersonicPercent: r.supersonicPercent,
-          timesDemoed: r.timesDemoed,
+          averageSpeedKph: r.averageSpeedKph ?? null,
+          supersonicPercent: r.supersonicPercent ?? null,
+          timesDemoed: r.timesDemoed ?? null,
         })),
       )
       .onConflictDoNothing();
@@ -96,16 +96,14 @@ export async function POST(request: Request) {
         payload.events.map((e) => ({
           id: e.id,
           eventName: e.eventName,
-          matchGuid: e.matchGuid,
+          matchGuid: e.matchGuid ?? null,
           receivedAt: new Date(e.receivedAt),
           rawJson: tryParseJson(e.rawJson) ?? e.rawJson,
         })),
       )
       .onConflictDoNothing();
 
-    if (Math.random() < 0.1) {
-      await trimEvents();
-    }
+    await trimEvents();
   }
 
   if (payload.liveMatchState) {
@@ -114,14 +112,15 @@ export async function POST(request: Request) {
       .insert(liveMatchState)
       .values({
         id: 1,
-        matchGuid: live.matchGuid,
-        arena: live.arena,
+        matchGuid: live.matchGuid ?? null,
+        arena: live.arena ?? null,
         timeSeconds: live.timeSeconds,
         isOvertime: live.isOvertime,
         hasWinner: live.hasWinner,
-        winner: live.winner,
+        winner: live.winner ?? null,
         players: live.players,
-        updatedAt: new Date(live.updatedAt),
+        // Stamped with the server clock so staleness checks don't depend on the agent's clock.
+        updatedAt: now,
       })
       .onConflictDoUpdate({
         target: liveMatchState.id,
@@ -209,12 +208,13 @@ async function applySessionUpdates(results: readonly PlayerMatchResultInput[]) {
 }
 
 async function trimEvents() {
+  // Finds the cutoff with a single index probe instead of sorting the whole table.
   await db.execute(sql`
-    DELETE FROM ${eventLog}
-    WHERE ${eventLog.id} IN (
-      SELECT ${eventLog.id} FROM ${eventLog}
-      ORDER BY ${eventLog.receivedAt} DESC
-      OFFSET ${STORED_EVENT_LIMIT}
+    DELETE FROM event_log
+    WHERE received_at < (
+      SELECT received_at FROM event_log
+      ORDER BY received_at DESC
+      OFFSET ${STORED_EVENT_LIMIT} LIMIT 1
     )
   `);
 }
