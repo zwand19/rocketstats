@@ -13,6 +13,7 @@ public sealed class BatchSenderWorker : BackgroundService
   private readonly IngestClient _client;
   private readonly AgentOptions _options;
   private readonly ILogger<BatchSenderWorker> _logger;
+  private int _consecutiveFailures;
 
   public BatchSenderWorker(
     StatsApiBuffer buffer,
@@ -56,16 +57,39 @@ public sealed class BatchSenderWorker : BackgroundService
       snapshot.ConnectionState.ToString(),
       snapshot.LastError);
 
-    var ok = await _client.SendAsync(payload, cancellationToken);
+    var result = await _client.SendAsync(payload, cancellationToken);
 
-    if (!ok)
+    switch (result)
     {
-      _logger.LogWarning(
-        "Batch send failed; retaining buffered data ({ObservedPlayers} players, {Matches} match results, {Events} events).",
-        snapshot.ObservedPlayers.Count,
-        snapshot.PlayerMatchResults.Count,
-        snapshot.Events.Count);
-      _buffer.Restore(snapshot);
+      case IngestResult.Sent:
+        if (_consecutiveFailures > 0)
+        {
+          _logger.LogInformation("Batch send recovered after {Failures} failed attempts.", _consecutiveFailures);
+          _consecutiveFailures = 0;
+        }
+
+        break;
+
+      case IngestResult.Rejected:
+        // Retrying a payload the server refuses would wedge the agent forever, so let it go.
+        _logger.LogWarning(
+          "Server rejected the batch; discarding it ({Matches} match results, {Events} events).",
+          snapshot.PlayerMatchResults.Count,
+          snapshot.Events.Count);
+        break;
+
+      default:
+        _buffer.Restore(snapshot);
+
+        // Warn when an outage starts and then every ~5 minutes, rather than on every tick.
+        if (_consecutiveFailures++ % 30 == 0)
+        {
+          _logger.LogWarning(
+            "Batch send to {ServerUrl} is failing; buffered data is kept and will be retried.",
+            _options.ServerUrl);
+        }
+
+        break;
     }
   }
 

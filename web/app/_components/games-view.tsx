@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { formatGameMode, formatLocalDate, teamClass, teamLabel } from "@/lib/format";
+import { formatGameMode, formatLocalDate, formatShortDateTime, teamClass, teamLabel } from "@/lib/format";
+import { TableSkeleton } from "./skeleton";
 import { getArenaDisplayName } from "@/lib/arena-names";
 import type { MatchesPage, MatchSummary, MatchSummaryPlayer } from "@/lib/api-types";
 
@@ -11,12 +12,25 @@ export function GamesView() {
   const [page, setPage] = useState(1);
   const [data, setData] = useState<MatchesPage | null>(null);
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   async function load(targetPage: number) {
-    const response = await fetch(`/api/games?page=${targetPage}&pageSize=${PAGE_SIZE}`, {
-      cache: "no-store",
-    });
-    const json: MatchesPage = await response.json();
+    let json: MatchesPage;
+
+    try {
+      const response = await fetch(`/api/games?page=${targetPage}&pageSize=${PAGE_SIZE}`, {
+        cache: "no-store",
+      });
+      if (!response.ok) {
+        throw new Error(`${response.status} ${response.statusText}`);
+      }
+      json = await response.json();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      return;
+    }
+
+    setError(null);
 
     if (json.totalCount > 0 && json.items.length === 0 && json.page > 1) {
       await load(json.page - 1);
@@ -40,7 +54,11 @@ export function GamesView() {
   }, [data]);
 
   async function confirmDelete(matchGuid: string) {
-    await fetch(`/api/games/${encodeURIComponent(matchGuid)}`, { method: "DELETE" });
+    const response = await fetch(`/api/games/${encodeURIComponent(matchGuid)}`, { method: "DELETE" });
+    if (!response.ok) {
+      setError(`Delete failed (${response.status})`);
+      return;
+    }
     await load(page);
   }
 
@@ -65,10 +83,12 @@ export function GamesView() {
           <span className="muted">{data?.totalCount ?? 0} total</span>
         </div>
 
+        {error ? <div className="alert">Couldn&apos;t load matches: {error}</div> : null}
+
         {data == null ? (
-          <p className="muted">Loading…</p>
+          error ? null : <TableSkeleton rows={4} />
         ) : data.totalCount === 0 ? (
-          <p className="muted">No matches recorded yet. Play or watch a replay with the Stats API enabled.</p>
+          <p className="empty">No matches recorded yet. Play or watch a replay with the Stats API enabled.</p>
         ) : (
           <>
             <div className="games-list">
@@ -129,40 +149,60 @@ function GameRow({
   onConfirmDelete: () => void;
 }) {
   const teams = useMemo(() => groupTeams(match.players), [match.players]);
+  const hasScore = teams.length === 2;
+
+  function renderTeam(team: (typeof teams)[number], alignEnd: boolean) {
+    const decided = match.winningTeam != null;
+    const isWinner = match.winningTeam === team.teamNum;
+    return (
+      <div
+        key={team.teamNum}
+        className={`game-team ${teamClass(team.teamNum)}${alignEnd ? " align-end" : ""}${decided && !isWinner ? " is-loser" : ""}`}
+        aria-label={`${teamLabel(team.teamNum)}${isWinner ? " (won)" : ""}`}
+      >
+        {team.players.map((p) => (
+          <span key={p.primaryId} className="game-player">
+            <strong>{p.name}</strong>
+            <span className="muted" title="Goals / assists / saves">
+              {p.goals}G {p.assists}A {p.saves}S
+            </span>
+          </span>
+        ))}
+      </div>
+    );
+  }
+
+  function renderScore(team: (typeof teams)[number]) {
+    return (
+      <span
+        className={`score ${teamClass(team.teamNum)}${match.winningTeam === team.teamNum ? " is-winner" : ""}`}
+      >
+        {team.goals}
+      </span>
+    );
+  }
 
   return (
     <article className="game-row">
       <div className="game-meta">
-        <strong>{formatLocalDate(match.endedAt)}</strong>
+        <strong title={formatLocalDate(match.endedAt)}>{formatShortDateTime(match.endedAt)}</strong>
         <span className="muted">{getArenaDisplayName(match.arena)}</span>
-        <span className="muted">{formatGameMode(match.gameMode)}</span>
+        <span className="chip chip-neutral">{formatGameMode(match.gameMode)}</span>
       </div>
 
-      <div className="game-teams">
-        {teams.map((team) => {
-          const isWinner = match.winningTeam === team.teamNum;
-          return (
-            <div
-              key={team.teamNum}
-              className={`game-team ${teamClass(team.teamNum)} ${isWinner ? "game-team-winner" : ""}`}
-            >
-              <div className="game-team-header">
-                <span className="team-dot" />
-                <strong>{teamLabel(team.teamNum)}</strong>
-                {isWinner ? <span className="chip chip-up">W</span> : null}
-              </div>
-              {team.players.map((p) => (
-                <span key={p.primaryId} className="game-player">
-                  <strong>{p.name}</strong>
-                  <span className="muted">
-                    {p.goals} G · {p.assists} A · {p.saves} S
-                  </span>
-                </span>
-              ))}
-            </div>
-          );
-        })}
-      </div>
+      {hasScore ? (
+        <div className="game-body">
+          {renderTeam(teams[0], true)}
+          <div className="game-score">
+            {renderScore(teams[0])}
+            <span className="dash">–</span>
+            {renderScore(teams[1])}
+          </div>
+          {renderTeam(teams[1], false)}
+        </div>
+      ) : (
+        <div className="game-body no-score">{teams.map((team) => renderTeam(team, false))}</div>
+      )}
 
       <div className="game-actions">
         {isPendingDelete ? (
@@ -176,7 +216,7 @@ function GameRow({
             </button>
           </>
         ) : (
-          <button className="link-button" onClick={onRequestDelete}>
+          <button className="link-button ghost-button" onClick={onRequestDelete}>
             Delete
           </button>
         )}
@@ -196,6 +236,7 @@ function groupTeams(players: MatchSummaryPlayer[]) {
     .sort((a, b) => a[0] - b[0])
     .map(([teamNum, ps]) => ({
       teamNum,
+      goals: ps.reduce((sum, p) => sum + p.goals, 0),
       players: ps.slice().sort((a, b) => b.score - a.score),
     }));
 }

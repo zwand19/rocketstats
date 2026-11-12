@@ -6,6 +6,17 @@ using RocketStats.Agent.Options;
 
 namespace RocketStats.Agent.Ingest;
 
+public enum IngestResult
+{
+  Sent,
+
+  /// <summary>The server could not be reached or had a transient problem; try the same data again.</summary>
+  RetryLater,
+
+  /// <summary>The server refused this payload itself; sending it again can never succeed.</summary>
+  Rejected,
+}
+
 public sealed class IngestClient
 {
   private readonly HttpClient _http;
@@ -19,7 +30,7 @@ public sealed class IngestClient
     _logger = logger;
   }
 
-  public async Task<bool> SendAsync(IngestPayload payload, CancellationToken cancellationToken)
+  public async Task<IngestResult> SendAsync(IngestPayload payload, CancellationToken cancellationToken)
   {
     var url = $"{_options.ServerUrl.TrimEnd('/')}/api/ingest";
 
@@ -37,22 +48,27 @@ public sealed class IngestClient
     {
       using var response = await _http.SendAsync(request, cancellationToken);
 
-      if (!response.IsSuccessStatusCode)
+      if (response.IsSuccessStatusCode)
       {
-        var body = await response.Content.ReadAsStringAsync(cancellationToken);
-        _logger.LogWarning(
-          "Ingest POST returned {StatusCode}: {Body}",
-          (int)response.StatusCode,
-          body);
-        return false;
+        return IngestResult.Sent;
       }
 
-      return true;
+      var body = await response.Content.ReadAsStringAsync(cancellationToken);
+      var statusCode = (int)response.StatusCode;
+      var rejected = statusCode is 400 or 413 or 422;
+
+      _logger.Log(
+        rejected ? LogLevel.Warning : LogLevel.Debug,
+        "Ingest POST returned {StatusCode}: {Body}",
+        statusCode,
+        body.Length > 500 ? body[..500] : body);
+
+      return rejected ? IngestResult.Rejected : IngestResult.RetryLater;
     }
     catch (Exception exception)
     {
-      _logger.LogWarning(exception, "Ingest POST to {Url} failed.", url);
-      return false;
+      _logger.LogDebug(exception, "Ingest POST to {Url} failed.", url);
+      return IngestResult.RetryLater;
     }
   }
 }

@@ -2,6 +2,9 @@ import { z } from "zod";
 
 const isoDate = z.string().datetime({ offset: true });
 
+// The agent serialises with WhenWritingNull, so a null field arrives as a missing key.
+// Every optional field below therefore has to accept both null and undefined.
+
 export const observedPlayerInputSchema = z.object({
   primaryId: z.string().min(1),
   name: z.string(),
@@ -14,7 +17,7 @@ export const playerMatchResultInputSchema = z.object({
   matchGuid: z.string().min(1),
   primaryId: z.string().min(1),
   name: z.string(),
-  arena: z.string().nullable(),
+  arena: z.string().nullish(),
   endedAt: isoDate,
   score: z.number().int(),
   goals: z.number().int(),
@@ -25,11 +28,11 @@ export const playerMatchResultInputSchema = z.object({
   demos: z.number().int(),
   averageBoost: z.number(),
   teamNum: z.number().int(),
-  winningTeam: z.number().int().nullable(),
+  winningTeam: z.number().int().nullish(),
   gameMode: z.number().int(),
-  averageSpeedKph: z.number().nullable(),
-  supersonicPercent: z.number().nullable(),
-  timesDemoed: z.number().int().nullable(),
+  averageSpeedKph: z.number().nullish(),
+  supersonicPercent: z.number().nullish(),
+  timesDemoed: z.number().int().nullish(),
 });
 
 export const livePlayerStatsSchema = z.object({
@@ -51,12 +54,12 @@ export const livePlayerStatsSchema = z.object({
 });
 
 export const liveMatchStateInputSchema = z.object({
-  matchGuid: z.string().nullable(),
-  arena: z.string().nullable(),
+  matchGuid: z.string().nullish(),
+  arena: z.string().nullish(),
   timeSeconds: z.number().int(),
   isOvertime: z.boolean(),
   hasWinner: z.boolean(),
-  winner: z.string().nullable(),
+  winner: z.string().nullish(),
   players: z.array(livePlayerStatsSchema),
   updatedAt: isoDate,
 });
@@ -66,7 +69,7 @@ const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}
 export const eventLogEntryInputSchema = z.object({
   id: z.string().regex(uuidRegex, "Expected UUID"),
   eventName: z.string(),
-  matchGuid: z.string().nullable(),
+  matchGuid: z.string().nullish(),
   receivedAt: isoDate,
   rawJson: z.string(),
 });
@@ -77,7 +80,7 @@ export const ingestPayloadSchema = z.object({
   events: z.array(eventLogEntryInputSchema).default([]),
   liveMatchState: liveMatchStateInputSchema.nullish(),
   connectionState: z.string(),
-  lastError: z.string().nullable().optional(),
+  lastError: z.string().nullish().optional(),
 });
 
 export type IngestPayload = z.infer<typeof ingestPayloadSchema>;

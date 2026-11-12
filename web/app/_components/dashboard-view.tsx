@@ -1,16 +1,19 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import { usePoll } from "@/lib/use-poll";
 import {
   formatGameMode,
   formatLocalTime,
   formatNullable,
+  formatShortDateTime,
   formatTime,
   teamClass,
   teamLabel,
 } from "@/lib/format";
 import { getArenaDisplayName } from "@/lib/arena-names";
+import { TableSkeleton } from "./skeleton";
 import type {
   DashboardPayload,
   HeadToHeadRecord,
@@ -31,7 +34,7 @@ export function DashboardView() {
   const [userChose, setUserChose] = useState(false);
 
   const url = `/api/dashboard${selectedMode == null ? "" : `?gameMode=${selectedMode}`}`;
-  const { data } = usePoll<DashboardPayload>(url, 2000);
+  const { data, error } = usePoll<DashboardPayload>(url, 2000);
 
   const detectedMode = useMemo(() => {
     if (!data) {
@@ -66,6 +69,10 @@ export function DashboardView() {
         </div>
       </section>
 
+      {error && !data ? (
+        <section className="alert">Couldn&apos;t load the dashboard ({error.message}). Retrying…</section>
+      ) : null}
+
       <LiveCard payload={data} />
 
       {data?.currentSession ? (
@@ -97,6 +104,11 @@ function LiveCard({ payload }: { payload: DashboardPayload | null }) {
     return map;
   }, [payload]);
 
+  const teams = live ? groupTeams(live.players) : [];
+  const isTwoTeams = teams.length === 2 && teams[0].teamNum === 0 && teams[1].teamNum === 1;
+  const me = payload?.mePrimaryId?.toLowerCase() ?? null;
+  const clock = live ? `${live.isOvertime ? "+" : ""}${formatTime(live.timeSeconds)}` : "";
+
   return (
     <section className="card">
       <div className="section-title">
@@ -104,66 +116,87 @@ function LiveCard({ payload }: { payload: DashboardPayload | null }) {
           {live ? <span className="live-dot" title="Receiving live data" /> : null}
           Live match
         </h2>
-        <span className="muted">{live ? formatLocalTime(live.updatedAt) : "No match state yet"}</span>
+        {live ? <span className="muted">Updated {formatLocalTime(live.updatedAt)}</span> : null}
       </div>
 
-      {live == null ? (
-        <p className="muted">
-          Start Rocket League with the Stats API enabled, then start a match or replay.
+      {payload == null ? (
+        <TableSkeleton rows={2} />
+      ) : live == null ? (
+        <p className="empty">
+          No match in progress. Start a match or replay in Rocket League with the Stats API
+          enabled and it will show up here within a few seconds.
         </p>
       ) : (
         <>
-          <div className="rank-list">
-            <div className="rank-row">
-              <strong>{formatTime(live.timeSeconds)}</strong>
-              <span>
-                {live.isOvertime ? "Overtime" : "Regulation"} · {getArenaDisplayName(live.arena)}
-              </span>
-              <span className="muted live-match-guid">{live.matchGuid ?? "Local"}</span>
+          <div className="scoreboard">
+            {isTwoTeams ? (
+              <div className="score-side team-blue">
+                <span className="score-team">Blue</span>
+                <span className="score-num">{teams[0].goals}</span>
+              </div>
+            ) : (
+              <span />
+            )}
+            <div className="score-center">
+              <span className="score-clock">{clock}</span>
+              <span className="score-meta">{getArenaDisplayName(live.arena)}</span>
+              {live.isOvertime ? <span className="chip chip-ot">OVERTIME</span> : null}
             </div>
+            {isTwoTeams ? (
+              <div className="score-side team-orange">
+                <span className="score-team">Orange</span>
+                <span className="score-num">{teams[1].goals}</span>
+              </div>
+            ) : (
+              <span />
+            )}
           </div>
 
-          {live.players.length > 0 ? (
+          {teams.length > 0 ? (
             <div className="live-teams">
-              {groupTeams(live.players).map((team) => (
+              {teams.map((team) => (
                 <div key={team.teamNum} className={`live-team ${teamClass(team.teamNum)}`}>
                   <div className="live-team-header">
                     <span className="team-dot" />
-                    <strong>{teamLabel(team.teamNum)}</strong>
-                    <span className="muted">
-                      {team.players.length} {team.players.length === 1 ? "player" : "players"}
-                    </span>
+                    <span>{teamLabel(team.teamNum)}</span>
                   </div>
 
                   {team.players.map((player) => {
                     const isOpponent = meTeamNum >= 0 && player.teamNum !== meTeamNum;
                     const h2h = isOpponent ? headToHeadMap.get(player.primaryId.toLowerCase()) : undefined;
                     return (
-                      <article
-                        key={player.primaryId}
-                        className={`live-player-card ${teamClass(team.teamNum)}`}
-                      >
-                        <div className="live-player-card-top">
-                          <strong>{player.name}</strong>
+                      <article key={player.primaryId} className="live-player">
+                        <div className="live-player-top">
+                          <strong className="player-name">
+                            <span>{player.name}</span>
+                            {me != null && player.primaryId.toLowerCase() === me ? (
+                              <span className="chip chip-me">You</span>
+                            ) : null}
+                          </strong>
                           {h2h ? (
-                            <div className="head-to-head">
-                              <span className="muted">Lifetime</span>
+                            <div
+                              className="head-to-head"
+                              title={`Your lifetime record against ${player.name} over ${h2h.gamesPlayed} ${h2h.gamesPlayed === 1 ? "game" : "games"}`}
+                            >
+                              <span>vs</span>
                               <strong className="record-text">
                                 {h2h.wins}-{h2h.losses}
                               </strong>
-                              <span className="muted">
-                                ({h2h.gamesPlayed} {h2h.gamesPlayed === 1 ? "game" : "games"})
-                              </span>
                             </div>
                           ) : null}
                         </div>
-                        <div className="mini-stats">
-                          <span>{player.score} pts</span>
-                          <span>{player.goals} G</span>
-                          <span>{player.assists} A</span>
-                          <span>{player.saves} S</span>
-                          <span>{player.shots} shots</span>
-                          <span>{player.boost} boost</span>
+                        <div className="live-stats">
+                          <LiveStat label="Score" value={player.score} />
+                          <LiveStat label="Goals" value={player.goals} />
+                          <LiveStat label="Assists" value={player.assists} />
+                          <LiveStat label="Saves" value={player.saves} />
+                          <LiveStat label="Shots" value={player.shots} />
+                          <div className="live-stat live-stat-boost">
+                            <small>Boost {player.boost}</small>
+                            <div className="boost-meter">
+                              <span style={{ width: `${Math.max(0, Math.min(100, player.boost))}%` }} />
+                            </div>
+                          </div>
                         </div>
                       </article>
                     );
@@ -177,9 +210,8 @@ function LiveCard({ payload }: { payload: DashboardPayload | null }) {
             <div className="rematch-card">
               <div className="rematch-title">
                 <strong>Rematch vs this lineup</strong>
-                <span className="muted">{formatGameMode(payload.rematch.gameMode)}</span>
+                <span className="chip chip-neutral">{formatGameMode(payload.rematch.gameMode)}</span>
               </div>
-              <div className="rematch-rows">
                 <div className="rematch-row">
                   <span className="muted">All time</span>
                   <strong className="record-text">
@@ -209,12 +241,10 @@ function LiveCard({ payload }: { payload: DashboardPayload | null }) {
                       {payload.rematch.streakWins}-{payload.rematch.streakLosses}
                     </strong>
                     <span className="muted">
-                      last {payload.rematch.streakGames} consecutive{" "}
-                      {payload.rematch.streakGames === 1 ? "game" : "games"}
+                      last {payload.rematch.streakGames} in a row
                     </span>
                   </div>
                 ) : null}
-              </div>
             </div>
           ) : null}
         </>
@@ -239,7 +269,7 @@ function SessionCard({
       <div className="section-title">
         <h2>Current session</h2>
         <span className="muted">
-          Started {new Date(session.startedAt).toLocaleString()} · {formatGameMode(session.gameMode)} ·{" "}
+          Started {formatShortDateTime(session.startedAt)} · {formatGameMode(session.gameMode)} ·{" "}
           {session.matchGuids.length} {session.matchGuids.length === 1 ? "game" : "games"}
           {payload.meStreak ? (
             <>
@@ -254,25 +284,26 @@ function SessionCard({
       </div>
 
       {sessionAverages.length === 0 ? (
-        <p className="muted">No tracked players have games in this session yet.</p>
+        <p className="empty">No tracked players have games in this session yet.</p>
       ) : (
+        <div className="table-scroll">
         <div className="averages-table session-table">
           <div className="averages-row averages-row-header">
             <span>Player</span>
             <span title="Games played">GP</span>
             <span title="Wins-Losses">W-L</span>
-            <span title="MVP percentage (most points in match)">MVP %</span>
-            <span>Score/g</span>
-            <span>Goals/g</span>
-            <span>Assists/g</span>
-            <span>Saves/g</span>
-            <span>Shots/g</span>
-            <span>Touches/g</span>
-            <span>Demos/g</span>
-            <span title="Times demoed per game">Demoed/g</span>
+            <span title="Share of games with the highest score in the match">MVP %</span>
+            <span title="Score per game">Score</span>
+            <span title="Goals per game">Goals</span>
+            <span title="Assists per game">Assists</span>
+            <span title="Saves per game">Saves</span>
+            <span title="Shots per game">Shots</span>
+            <span title="Touches per game">Touches</span>
+            <span title="Demos per game">Demos</span>
+            <span title="Times demoed per game">Demoed</span>
             <span title="Average speed (km/h, while in car)">Speed</span>
-            <span title="Percent of time at supersonic">SS %</span>
-            <span>Boost avg</span>
+            <span title="Percent of time at supersonic">Sonic %</span>
+            <span title="Average boost amount">Boost</span>
           </div>
 
           {sessionAverages.map((s) => {
@@ -281,9 +312,9 @@ function SessionCard({
             );
             return (
               <div key={s.primaryId} className="averages-row">
-                <div>
-                  <strong>{s.name}</strong>
-                </div>
+                <strong className="player-name">
+                  <span>{s.name}</span>
+                </strong>
                 <span>{s.gamesPlayed}</span>
                 <span>
                   {s.wins}-{s.losses}
@@ -309,7 +340,11 @@ function SessionCard({
             );
           })}
         </div>
+        </div>
       )}
+      {sessionAverages.length > 0 ? (
+        <p className="table-note">Per-game averages. Badges compare this session with the all-time average in this mode.</p>
+      ) : null}
     </section>
   );
 }
@@ -329,53 +364,52 @@ function StatsCard({
   return (
     <section className="card">
       <div className="section-title">
-        <h2>Stats</h2>
-        <span className="muted">
-          {dashboardPlayers.length} {dashboardPlayers.length === 1 ? "player" : "players"} tracked ·{" "}
-          {modeLabel(effectiveMode)}
-        </span>
-      </div>
-
-      <div className="mode-chips">
+        <h2>Career averages</h2>
+        <div className="mode-chips" role="group" aria-label="Game mode">
         {MODE_CHIPS.map((option) => (
           <button
             key={option.label}
             type="button"
             className={`chip mode-chip ${option.mode === effectiveMode ? "chip-selected" : ""}`}
+            aria-pressed={option.mode === effectiveMode}
             onClick={() => onSelectMode(option.mode)}
           >
             {option.label}
           </button>
         ))}
+        </div>
       </div>
 
-      {dashboardPlayers.length === 0 ? (
-        <p className="muted">
-          No players are tracked yet. Open <a href="/players">Players</a> and Track someone to see
-          their averages here.
+      {payload == null ? (
+        <TableSkeleton rows={3} />
+      ) : dashboardPlayers.length === 0 ? (
+        <p className="empty">
+          No players are tracked yet. Open <Link href="/players">Players</Link> and track someone
+          to see their averages here.
         </p>
       ) : careerForCard.length === 0 ? (
-        <p className="muted">
+        <p className="empty">
           No completed matches yet for tracked players in {modeLabel(effectiveMode)}. Averages
           appear after a match ends.
         </p>
       ) : (
+        <div className="table-scroll">
         <div className="averages-table">
           <div className="averages-row averages-row-header">
             <span>Player</span>
             <span title="Games played">GP</span>
-            <span title="MVP percentage (most points in match)">MVP %</span>
-            <span>Score/g</span>
-            <span>Goals/g</span>
-            <span>Assists/g</span>
-            <span>Saves/g</span>
-            <span>Shots/g</span>
-            <span>Touches/g</span>
-            <span>Demos/g</span>
-            <span title="Times demoed per game">Demoed/g</span>
+            <span title="Share of games with the highest score in the match">MVP %</span>
+            <span title="Score per game">Score</span>
+            <span title="Goals per game">Goals</span>
+            <span title="Assists per game">Assists</span>
+            <span title="Saves per game">Saves</span>
+            <span title="Shots per game">Shots</span>
+            <span title="Touches per game">Touches</span>
+            <span title="Demos per game">Demos</span>
+            <span title="Times demoed per game">Demoed</span>
             <span title="Average speed (km/h, while in car)">Speed</span>
-            <span title="Percent of time at supersonic">SS %</span>
-            <span>Boost avg</span>
+            <span title="Percent of time at supersonic">Sonic %</span>
+            <span title="Average boost amount">Boost</span>
           </div>
 
           {dashboardPlayers.map((player) => {
@@ -385,15 +419,15 @@ function StatsCard({
 
             return (
               <div key={player.primaryId} className="averages-row">
-                <div>
-                  <strong>{player.name}</strong>
-                </div>
+                <strong className="player-name">
+                  <span>{player.name}</span>
+                </strong>
                 {averages == null ? (
                   <>
+                    <span>0</span>
                     {Array.from({ length: 12 }).map((_, i) => (
                       <span key={i} className="muted">—</span>
                     ))}
-                    <span className="muted">No matches yet</span>
                   </>
                 ) : (
                   <>
@@ -416,8 +450,18 @@ function StatsCard({
             );
           })}
         </div>
+        </div>
       )}
     </section>
+  );
+}
+
+function LiveStat({ label, value }: { label: string; value: number }) {
+  return (
+    <div className="live-stat">
+      <small>{label}</small>
+      <strong>{value}</strong>
+    </div>
   );
 }
 
@@ -482,6 +526,7 @@ function groupTeams(players: LivePlayerStatsView[]) {
     .sort((a, b) => a[0] - b[0])
     .map(([teamNum, plist]) => ({
       teamNum,
+      goals: plist.reduce((sum, p) => sum + p.goals, 0),
       players: plist.slice().sort((a, b) => b.score - a.score),
     }));
 }

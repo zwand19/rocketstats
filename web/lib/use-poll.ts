@@ -1,45 +1,67 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 
+/**
+ * Polls `url`, waiting `intervalMs` between the end of one request and the start of the
+ * next. Requests never overlap, so a slow response is not cancelled by the next tick, and
+ * polling pauses while the tab is hidden.
+ */
 export function usePoll<T>(url: string, intervalMs: number = 2000, initial: T | null = null) {
   const [data, setData] = useState<T | null>(initial);
   const [error, setError] = useState<Error | null>(null);
-  const aborter = useRef<AbortController | null>(null);
 
   useEffect(() => {
-    let cancelled = false;
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let inFlight = false;
 
-    async function fetchOnce() {
-      aborter.current?.abort();
-      const ac = new AbortController();
-      aborter.current = ac;
+    async function tick() {
+      timer = null;
+
+      if (document.hidden) {
+        return;
+      }
+
+      inFlight = true;
 
       try {
-        const response = await fetch(url, { signal: ac.signal, cache: "no-store" });
+        const response = await fetch(url, { signal: controller.signal, cache: "no-store" });
         if (!response.ok) {
           throw new Error(`${response.status} ${response.statusText}`);
         }
         const json = (await response.json()) as T;
-        if (!cancelled) {
-          setData(json);
-          setError(null);
-        }
+        setData(json);
+        setError(null);
       } catch (err) {
-        if (cancelled || (err instanceof DOMException && err.name === "AbortError")) {
+        if (controller.signal.aborted) {
           return;
         }
         setError(err instanceof Error ? err : new Error(String(err)));
+      } finally {
+        inFlight = false;
+      }
+
+      if (!controller.signal.aborted) {
+        timer = setTimeout(tick, intervalMs);
       }
     }
 
-    fetchOnce();
-    const id = setInterval(fetchOnce, intervalMs);
+    function onVisibilityChange() {
+      if (!document.hidden && !inFlight && timer == null) {
+        tick();
+      }
+    }
+
+    tick();
+    document.addEventListener("visibilitychange", onVisibilityChange);
 
     return () => {
-      cancelled = true;
-      clearInterval(id);
-      aborter.current?.abort();
+      controller.abort();
+      if (timer != null) {
+        clearTimeout(timer);
+      }
+      document.removeEventListener("visibilitychange", onVisibilityChange);
     };
   }, [url, intervalMs]);
 
